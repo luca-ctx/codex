@@ -286,6 +286,7 @@ fn make_chatwidget_manual() -> (
         suppress_session_configured_redraw: false,
         pending_notification: None,
         is_review_mode: false,
+        keep_going_mode: false,
         ghost_snapshots: Vec::new(),
         ghost_snapshots_disabled: false,
         needs_final_message_separator: false,
@@ -2264,7 +2265,7 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
     chat.handle_codex_event(Event {
         id: "t1".into(),
-        msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),
+        msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I'm going to search the repo for where Change Approved is rendered to update that view.".into() }),
     });
 
     chat.handle_codex_event(Event {

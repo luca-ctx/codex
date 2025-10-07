@@ -261,6 +261,8 @@ pub(crate) struct ChatWidget {
     pending_notification: Option<Notification>,
     // Simple review mode flag; used to adjust layout and banners.
     is_review_mode: bool,
+    // Keep going mode flag
+    keep_going_mode: bool,
     // List of ghost commits corresponding to each turn.
     ghost_snapshots: Vec<GhostCommit>,
     ghost_snapshots_disabled: bool,
@@ -417,8 +419,21 @@ impl ChatWidget {
         self.running_commands.clear();
         self.request_redraw();
 
-        // If there is a queued user message, send exactly one now to begin the next turn.
-        self.maybe_send_next_queued_input();
+        // Prefer any queued user message submitted by the user while the task was running.
+        if !self.queued_user_messages.is_empty() {
+            self.maybe_send_next_queued_input();
+        } else if self.keep_going_mode {
+            // Otherwise, if keep‑going mode is enabled, automatically continue.
+            let continuation_message =
+                "Please continue working on this task. Keep going with your current approach."
+                    .to_string();
+            let user_message = UserMessage {
+                text: continuation_message,
+                image_paths: vec![],
+            };
+            self.submit_user_message(user_message);
+        }
+
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
             response: last_agent_message.unwrap_or_default(),
@@ -955,6 +970,7 @@ impl ChatWidget {
             suppress_session_configured_redraw: false,
             pending_notification: None,
             is_review_mode: false,
+            keep_going_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
@@ -1020,6 +1036,7 @@ impl ChatWidget {
             suppress_session_configured_redraw: true,
             pending_notification: None,
             is_review_mode: false,
+            keep_going_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
@@ -1142,6 +1159,16 @@ impl ChatWidget {
                 const INIT_PROMPT: &str = include_str!("../prompt_for_init_command.md");
                 self.submit_text_message(INIT_PROMPT.to_string());
             }
+            SlashCommand::Continue => {
+                self.keep_going_mode = !self.keep_going_mode;
+                let message = if self.keep_going_mode {
+                    "Keep-going mode enabled. Codex will automatically continue working after each task completion."
+                } else {
+                    "Keep-going mode disabled."
+                };
+                self.add_to_history(history_cell::new_info_event(message.to_string(), None));
+                self.request_redraw();
+            }
             SlashCommand::Compact => {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
@@ -1195,41 +1222,7 @@ impl ChatWidget {
             }
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => {
-                use codex_core::protocol::EventMsg;
-                use std::collections::HashMap;
-
-                use codex_core::protocol::ApplyPatchApprovalRequestEvent;
-                use codex_core::protocol::FileChange;
-
-                self.app_event_tx.send(AppEvent::CodexEvent(Event {
-                    id: "1".to_string(),
-                    // msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-                    //     call_id: "1".to_string(),
-                    //     command: vec!["git".into(), "apply".into()],
-                    //     cwd: self.config.cwd.clone(),
-                    //     reason: Some("test".to_string()),
-                    // }),
-                    msg: EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
-                        call_id: "1".to_string(),
-                        changes: HashMap::from([
-                            (
-                                PathBuf::from("/tmp/test.txt"),
-                                FileChange::Add {
-                                    content: "test".to_string(),
-                                },
-                            ),
-                            (
-                                PathBuf::from("/tmp/test2.txt"),
-                                FileChange::Update {
-                                    unified_diff: "+test\n-test2".to_string(),
-                                    move_path: None,
-                                },
-                            ),
-                        ]),
-                        reason: None,
-                        grant_root: Some(PathBuf::from("/tmp")),
-                    }),
-                }));
+                // Test approval request functionality removed
             }
         }
     }
