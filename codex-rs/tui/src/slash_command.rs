@@ -17,6 +17,7 @@ pub enum SlashCommand {
     Review,
     New,
     Init,
+    Continue,
     Compact,
     Undo,
     Diff,
@@ -35,10 +36,12 @@ impl SlashCommand {
         match self {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
+            SlashCommand::Continue => {
+                "toggle keep-going mode (automatically continue after task completion)"
+            }
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Undo => "restore the workspace to the last Codex snapshot",
-            SlashCommand::Quit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
@@ -46,6 +49,7 @@ impl SlashCommand {
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
+            SlashCommand::Quit => "exit Codex",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",
         }
@@ -62,6 +66,7 @@ impl SlashCommand {
         match self {
             SlashCommand::New
             | SlashCommand::Init
+            | SlashCommand::Continue
             | SlashCommand::Compact
             | SlashCommand::Undo
             | SlashCommand::Model
