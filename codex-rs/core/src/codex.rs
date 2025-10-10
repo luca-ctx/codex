@@ -67,6 +67,7 @@ use crate::openai_tools::ToolsConfigParams;
 use crate::parse_command::parse_command;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageDeltaEvent;
+use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningDeltaEvent;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -1974,7 +1975,7 @@ async fn run_turn(
         .get_model_family()
         .supports_parallel_tool_calls;
     let parallel_tool_calls = model_supports_parallel;
-    let prompt = Prompt {
+    let mut prompt = Prompt {
         input,
         tools: router.specs(),
         parallel_tool_calls,
@@ -1983,6 +1984,9 @@ async fn run_turn(
     };
 
     let mut retries = 0;
+    let mut context_window_exceeded_retries = 0;
+    const MAX_CONTEXT_WINDOW_EXCEEDED_RETRIES: u32 = 1;
+
     loop {
         match try_run_turn(
             Arc::clone(&router),
@@ -2000,8 +2004,45 @@ async fn run_turn(
             Err(CodexErr::EnvVar(var)) => return Err(CodexErr::EnvVar(var)),
             Err(e @ CodexErr::Fatal(_)) => return Err(e),
             Err(e @ CodexErr::ContextWindowExceeded) => {
+                // If we've already retried once after auto-compaction, don't retry again
+                if context_window_exceeded_retries >= MAX_CONTEXT_WINDOW_EXCEEDED_RETRIES {
+                    sess.set_total_tokens_full(&sub_id, &turn_context).await;
+                    return Err(e);
+                }
+
+                context_window_exceeded_retries += 1;
                 sess.set_total_tokens_full(&sub_id, &turn_context).await;
-                return Err(e);
+
+                // Instead of immediately returning the error, try to auto-compact and retry
+                tracing::info!("Context window exceeded, attempting auto-compact");
+
+                // Notify the UI that auto-compaction is happening
+                let event = Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::AgentMessage(AgentMessageEvent {
+                        message:
+                            "Context window limit exceeded. Auto-compacting conversation history..."
+                                .to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+
+                // Run the inline auto-compact task
+                compact::run_inline_auto_compact_task(Arc::clone(&sess), Arc::clone(&turn_context))
+                    .await;
+
+                // Rebuild the prompt with the new compacted history
+                let new_input = sess.turn_input_with_history(Vec::new()).await;
+                prompt = Prompt {
+                    input: new_input,
+                    tools: router.specs(),
+                    parallel_tool_calls,
+                    base_instructions_override: turn_context.base_instructions.clone(),
+                    output_schema: turn_context.final_output_json_schema.clone(),
+                };
+
+                // Continue the loop to retry with the compacted history
+                continue;
             }
             Err(CodexErr::UsageLimitReached(e)) => {
                 let rate_limits = e.rate_limits.clone();

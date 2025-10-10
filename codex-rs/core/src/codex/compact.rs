@@ -113,7 +113,7 @@ async fn run_compact_task_inner(
             Err(CodexErr::Interrupted) => {
                 return;
             }
-            Err(e @ CodexErr::ContextWindowExceeded) => {
+            Err(CodexErr::ContextWindowExceeded) => {
                 if turn_input.len() > 1 {
                     turn_input.remove(0);
                     truncated_count += 1;
@@ -125,7 +125,7 @@ async fn run_compact_task_inner(
                 let event = Event {
                     id: sub_id.clone(),
                     msg: EventMsg::Error(ErrorEvent {
-                        message: e.to_string(),
+                        message: "Context window exceeded during compact operation. Please start a new conversation.".to_string(),
                     }),
                 };
                 sess.send_event(event).await;
