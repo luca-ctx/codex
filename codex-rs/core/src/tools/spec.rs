@@ -719,12 +719,15 @@ pub(crate) fn build_specs(
     use crate::exec_command::create_exec_command_tool_for_responses_api;
     use crate::exec_command::create_write_stdin_tool_for_responses_api;
     use crate::tools::handlers::ApplyPatchHandler;
+    use crate::tools::handlers::DelegateWorkerHandler;
     use crate::tools::handlers::ExecStreamHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
+    use crate::tools::handlers::ReviewAgentHandler;
+    use crate::tools::handlers::SessionHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
@@ -740,6 +743,9 @@ pub(crate) fn build_specs(
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
+    let session_handler = Arc::new(SessionHandler);
+    let review_agent_handler = Arc::new(ReviewAgentHandler);
+    let delegate_worker_handler = Arc::new(DelegateWorkerHandler);
 
     if config.experimental_unified_exec_tool {
         builder.push_spec(create_unified_exec_tool());
@@ -774,6 +780,50 @@ pub(crate) fn build_specs(
         builder.push_spec(PLAN_TOOL.clone());
         builder.register_handler("update_plan", plan_handler);
     }
+
+    // Agent-level tools
+    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+        name: "permanently_terminate_session".to_string(),
+        description: "When a task is totally complete and there is not a single extra change or improvement that could be made, call this tool to permanently end the session. Only call this tool when there is nothing left to debug, no other tasks, no other improvements to be made. If this is not the case, do not use this tool.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object { properties: Default::default(), required: None, additional_properties: Some(false.into()) },
+    }));
+    builder.register_handler("permanently_terminate_session", session_handler);
+
+    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+        name: "request_code_review".to_string(),
+        description: "Request a comprehensive code review of recent changes. Optionally provide a custom review plan and scope (HEAD diff, commit hash, or range).".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: {
+                let mut p = std::collections::BTreeMap::new();
+                p.insert("plan".to_string(), JsonSchema::String { description: Some("Optional custom review plan text".to_string()) });
+                p.insert("scope".to_string(), JsonSchema::Object { properties: Default::default(), required: None, additional_properties: Some(true.into()) });
+                p.insert("model".to_string(), JsonSchema::String { description: Some("Optional model override for the reviewer".to_string()) });
+                p
+            },
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    }));
+    builder.register_handler("request_code_review", review_agent_handler);
+
+    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+        name: "delegate_to_worker".to_string(),
+        description: "Delegate work to a worker agent with a provided plan. Optionally specify a worker model.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: {
+                let mut p = std::collections::BTreeMap::new();
+                p.insert("worker_plan".to_string(), JsonSchema::String { description: Some("Detailed plan/instructions for the worker agent".to_string()) });
+                p.insert("worker_model".to_string(), JsonSchema::String { description: Some("Optional worker model".to_string()) });
+                p
+            },
+            required: Some(vec!["worker_plan".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    }));
+    builder.register_handler("delegate_to_worker", delegate_worker_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {

@@ -67,7 +67,7 @@ use crate::openai_tools::ToolsConfigParams;
 use crate::parse_command::parse_command;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageDeltaEvent;
-use crate::protocol::AgentMessageEvent;
+use crate::protocol::AgentMessageEvent; // used in run_turn for UI notification
 use crate::protocol::AgentReasoningDeltaEvent;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -114,6 +114,9 @@ use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
+// for budget-aware auto-compact helpers
+use crate::codex::compact::build_compacted_history;
+use crate::codex::compact::collect_user_messages;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -124,9 +127,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 
-pub mod compact;
-use self::compact::build_compacted_history;
-use self::compact::collect_user_messages;
+pub(crate) mod compact;
 
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.
@@ -1542,7 +1543,7 @@ async fn submission_loop(
 }
 
 /// Spawn a review thread using the given prompt.
-async fn spawn_review_thread(
+pub(crate) async fn spawn_review_thread(
     sess: Arc<Session>,
     config: Arc<Config>,
     parent_turn_context: Arc<TurnContext>,
@@ -1684,6 +1685,7 @@ pub(crate) async fn run_task(
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     let mut auto_compact_recently_attempted = false;
+    let mut did_hard_truncate_retry = false;
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -1897,6 +1899,25 @@ pub(crate) async fn run_task(
                 }
                 continue;
             }
+            Err(CodexErr::ContextWindowExceeded) => {
+                // Preflight compaction should have run, but if we still exceeded, apply a
+                // hard truncation fallback once: keep only initial context to make progress.
+                sess.set_total_tokens_full(&sub_id, &turn_context).await;
+                if !did_hard_truncate_retry {
+                    did_hard_truncate_retry = true;
+                    let initial = sess.build_initial_context(turn_context.as_ref());
+                    sess.replace_history(initial).await;
+                    continue;
+                }
+                let event = Event {
+                    id: sub_id.clone(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: CodexErr::ContextWindowExceeded.to_string(),
+                    }),
+                };
+                sess.send_event(event).await;
+                break;
+            }
             Err(e) => {
                 info!("Turn error: {e:#}");
                 let event = Event {
@@ -1983,9 +2004,28 @@ async fn run_turn(
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
+    // Preflight: estimate prompt tokens and proactively compact if over budget.
+    if should_preflight_compact(&turn_context, &prompt.input) {
+        let target_budget = preflight_target_budget_tokens(&turn_context).unwrap_or(64_000);
+        compact::run_inline_auto_compact_task_with_budget(
+            Arc::clone(&sess),
+            Arc::clone(&turn_context),
+            target_budget,
+        )
+        .await;
+        let new_input = sess.turn_input_with_history(Vec::new()).await;
+        prompt = Prompt {
+            input: new_input,
+            tools: router.specs(),
+            parallel_tool_calls,
+            base_instructions_override: turn_context.base_instructions.clone(),
+            output_schema: turn_context.final_output_json_schema.clone(),
+        };
+    }
+
     let mut retries = 0;
     let mut context_window_exceeded_retries = 0;
-    const MAX_CONTEXT_WINDOW_EXCEEDED_RETRIES: u32 = 1;
+    const MAX_CONTEXT_WINDOW_EXCEEDED_RETRIES: u32 = 2;
 
     loop {
         match try_run_turn(
@@ -2014,7 +2054,7 @@ async fn run_turn(
                 sess.set_total_tokens_full(&sub_id, &turn_context).await;
 
                 // Instead of immediately returning the error, try to auto-compact and retry
-                tracing::info!("Context window exceeded, attempting auto-compact");
+                tracing::info!("Context window exceeded, attempting auto-compact or fallback");
 
                 // Notify the UI that auto-compaction is happening
                 let event = Event {
@@ -2027,9 +2067,14 @@ async fn run_turn(
                 };
                 sess.send_event(event).await;
 
-                // Run the inline auto-compact task
-                compact::run_inline_auto_compact_task(Arc::clone(&sess), Arc::clone(&turn_context))
-                    .await;
+                // First attempt: budget-aware compaction
+                let target_budget = preflight_target_budget_tokens(&turn_context).unwrap_or(64_000);
+                compact::run_inline_auto_compact_task_with_budget(
+                    Arc::clone(&sess),
+                    Arc::clone(&turn_context),
+                    target_budget,
+                )
+                .await;
 
                 // Rebuild the prompt with the new compacted history
                 let new_input = sess.turn_input_with_history(Vec::new()).await;
@@ -2081,6 +2126,43 @@ async fn run_turn(
             }
         }
     }
+}
+
+fn estimate_tokens_for_items(items: &[ResponseItem]) -> u64 {
+    // Conservative 4 bytes/token heuristic over concatenated text content.
+    let mut bytes: usize = 0;
+    for item in items {
+        if let ResponseItem::Message { content, .. } = item {
+            for c in content {
+                match c {
+                    ContentItem::OutputText { text } | ContentItem::InputText { text } => {
+                        bytes = bytes.saturating_add(text.len());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (bytes as u64).div_ceil(4)
+}
+
+fn preflight_target_budget_tokens(turn: &TurnContext) -> Option<u64> {
+    let ctx = turn.client.get_model_context_window()?;
+    let max_out = turn.client.get_model_max_output_tokens().unwrap_or(8192);
+    // Reserve 20% safety margin and output tokens.
+    let reserved = (ctx as f64 * 0.2) as u64;
+    Some(ctx.saturating_sub(reserved).saturating_sub(max_out))
+}
+
+fn should_preflight_compact(turn: &TurnContext, input: &[ResponseItem]) -> bool {
+    let ctx = match turn.client.get_model_context_window() {
+        Some(v) => v,
+        None => return false,
+    };
+    let max_out = turn.client.get_model_max_output_tokens().unwrap_or(8192);
+    let estimate = estimate_tokens_for_items(input);
+    // Trigger preflight if estimate exceeds 70% of context window or exceeds ctx - max_out margin
+    estimate >= (ctx as f64 * 0.7) as u64 || estimate >= ctx.saturating_sub(max_out)
 }
 
 /// When the model is prompted, it returns a stream of events. Some of these

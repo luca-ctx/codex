@@ -256,6 +256,14 @@ async fn run_codex_tool_session_inner(
                     EventMsg::AgentMessage(AgentMessageEvent { .. }) => {
                         // TODO: think how we want to support this in the MCP
                     }
+                    EventMsg::SessionTerminated(_) => {
+                        // Return a response indicating termination.
+                        let result = json!({
+                            "terminated": true
+                        });
+                        outgoing.send_response(request_id.clone(), result).await;
+                        break;
+                    }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::AgentReasoningRawContentDelta(_)
                     | EventMsg::TaskStarted(_)

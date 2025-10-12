@@ -44,7 +44,26 @@ pub(crate) async fn run_inline_auto_compact_task(
     let input = vec![InputItem::Text {
         text: SUMMARIZATION_PROMPT.to_string(),
     }];
-    run_compact_task_inner(sess, turn_context, sub_id, input).await;
+    run_compact_task_inner(sess, turn_context, sub_id, input, None).await;
+}
+
+pub(crate) async fn run_inline_auto_compact_task_with_budget(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    target_budget_tokens: u64,
+) {
+    let sub_id = sess.next_internal_sub_id();
+    let input = vec![InputItem::Text {
+        text: SUMMARIZATION_PROMPT.to_string(),
+    }];
+    run_compact_task_inner(
+        sess,
+        turn_context,
+        sub_id,
+        input,
+        Some(target_budget_tokens),
+    )
+    .await;
 }
 
 pub(crate) async fn run_compact_task(
@@ -60,7 +79,7 @@ pub(crate) async fn run_compact_task(
         }),
     };
     sess.send_event(start_event).await;
-    run_compact_task_inner(sess.clone(), turn_context, sub_id.clone(), input).await;
+    run_compact_task_inner(sess.clone(), turn_context, sub_id.clone(), input, None).await;
     None
 }
 
@@ -69,6 +88,7 @@ async fn run_compact_task_inner(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
+    target_budget_tokens: Option<u64>,
 ) {
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
     let mut turn_input = sess
@@ -160,7 +180,31 @@ async fn run_compact_task_inner(
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
     let user_messages = collect_user_messages(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
+    let initial_context_snapshot = initial_context.clone();
+    let mut new_history = build_compacted_history_with_budget(
+        initial_context_snapshot.clone(),
+        &user_messages,
+        &summary_text,
+        target_budget_tokens,
+    );
+    // Iterative shrink: if target budget was provided and we still overflow, drop oldest user chunks.
+    if let Some(budget) = target_budget_tokens {
+        // Estimate by concatenating user text we just bridged; if too big, strip prior messages progressively.
+        let mut attempts = 0usize;
+        while attempts < 3 {
+            let est_tokens = super::estimate_tokens_for_items(&new_history);
+            if est_tokens <= budget {
+                break;
+            }
+            attempts += 1;
+            // Keep only initial context and the last bridge message if present.
+            let mut kept: Vec<ResponseItem> = initial_context_snapshot.clone();
+            if let Some(last) = new_history.last().cloned() {
+                kept.push(last);
+            }
+            new_history = kept;
+        }
+    }
     sess.replace_history(new_history).await;
 
     let rollout_item = RolloutItem::Compacted(CompactedItem {
@@ -221,6 +265,15 @@ pub(crate) fn build_compacted_history(
     user_messages: &[String],
     summary_text: &str,
 ) -> Vec<ResponseItem> {
+    build_compacted_history_with_budget(initial_context, user_messages, summary_text, None)
+}
+
+pub(crate) fn build_compacted_history_with_budget(
+    initial_context: Vec<ResponseItem>,
+    user_messages: &[String],
+    summary_text: &str,
+    target_budget_tokens: Option<u64>,
+) -> Vec<ResponseItem> {
     let mut history = initial_context;
     let mut user_messages_text = if user_messages.is_empty() {
         "(none)".to_string()
@@ -228,8 +281,10 @@ pub(crate) fn build_compacted_history(
         user_messages.join("\n\n")
     };
     // Truncate the concatenated prior user messages so the bridge message
-    // stays well under the context window (approx. 4 bytes/token).
-    let max_bytes = COMPACT_USER_MESSAGE_MAX_TOKENS * 4;
+    // stays under a dynamic budget (approx. 4 bytes/token) or a conservative default.
+    let max_bytes = target_budget_tokens
+        .map(|t| (t as usize).saturating_mul(4) / 2) // dedicate ~50% of budget to user messages
+        .unwrap_or(COMPACT_USER_MESSAGE_MAX_TOKENS * 4);
     if user_messages_text.len() > max_bytes {
         user_messages_text = truncate_middle(&user_messages_text, max_bytes).0;
     }
@@ -417,6 +472,45 @@ mod tests {
         assert!(
             bridge_text.contains("SUMMARY"),
             "bridge should include the provided summary text"
+        );
+    }
+
+    #[test]
+    fn compaction_respects_target_budget() {
+        // Build a synthetic history with a very large user message to trigger budget logic.
+        let big_user = "X".repeat(200_000);
+        let items = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: big_user }],
+        }];
+
+        let user_messages = collect_user_messages(&items);
+        let history = build_compacted_history_with_budget(
+            Vec::new(),
+            &user_messages,
+            "SUMMARY",
+            Some(10_000),
+        );
+
+        // Estimate tokens with the same conservative heuristic used elsewhere (4 bytes/token)
+        let mut bytes: usize = 0;
+        for it in &history {
+            if let ResponseItem::Message { content, .. } = it {
+                for c in content {
+                    match c {
+                        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                            bytes = bytes.saturating_add(text.len());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let estimated_tokens = (bytes as u64).div_ceil(4);
+        assert!(
+            estimated_tokens <= 10_000,
+            "estimated {estimated_tokens} > budget"
         );
     }
 }

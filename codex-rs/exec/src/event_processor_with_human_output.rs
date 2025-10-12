@@ -208,6 +208,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     message,
                 );
             }
+            EventMsg::SessionTerminated(_) => {
+                // Treat as a clean shutdown signal from the agent.
+                return CodexStatus::InitiateShutdown;
+            }
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent { command, cwd, .. }) => {
                 eprint!(
                     "{}\n{} in {}",

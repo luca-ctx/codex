@@ -438,6 +438,9 @@ pub enum EventMsg {
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
 
+    /// Session has been permanently terminated by the agent/tool.
+    SessionTerminated(SessionTerminatedEvent),
+
     /// User/system input message (what was sent to the model)
     UserMessage(UserMessageEvent),
 
@@ -522,6 +525,12 @@ pub enum EventMsg {
 
     /// Exited review mode with an optional final result to apply.
     ExitedReviewMode(ExitedReviewModeEvent),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SessionTerminatedEvent {
+    /// Human-readable reason provided by the agent.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]

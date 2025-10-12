@@ -120,6 +120,20 @@ impl ModelClient {
         })
     }
 
+    pub fn get_model_max_output_tokens(&self) -> Option<u64> {
+        self.config.model_max_output_tokens.or_else(|| {
+            get_model_info(&self.config.model_family).map(|info| info.max_output_tokens)
+        })
+    }
+
+    pub fn get_config(&self) -> &Arc<Config> {
+        &self.config
+    }
+
+    pub fn get_conversation_id(&self) -> ConversationId {
+        self.conversation_id
+    }
+
     /// Dispatches to either the Responses or Chat implementation depending on
     /// the provider config.  Public callers always invoke `stream()` – the
     /// specialised helpers are private to avoid accidental misuse.

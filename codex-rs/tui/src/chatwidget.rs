@@ -1397,6 +1397,14 @@ impl ChatWidget {
 
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
+            EventMsg::SessionTerminated(ev) => {
+                self.keep_going_mode = false;
+                self.add_to_history(history_cell::new_info_event(
+                    ev.message,
+                    None,
+                ));
+                self.request_redraw();
+            }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
