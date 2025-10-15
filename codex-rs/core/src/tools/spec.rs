@@ -1,4 +1,3 @@
-use crate::agent::AgentRegistry;
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::model_family::ModelFamily;
@@ -29,7 +28,6 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_unified_exec_tool: bool,
-    pub include_agent_tool: bool,
     pub experimental_supported_tools: Vec<String>,
 }
 
@@ -41,7 +39,6 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) use_streamable_shell_tool: bool,
     pub(crate) include_view_image_tool: bool,
     pub(crate) experimental_unified_exec_tool: bool,
-    pub(crate) include_agent_tool: bool,
 }
 
 impl ToolsConfig {
@@ -54,7 +51,6 @@ impl ToolsConfig {
             use_streamable_shell_tool,
             include_view_image_tool,
             experimental_unified_exec_tool,
-            include_agent_tool,
         } = params;
         let shell_type = if *use_streamable_shell_tool {
             ConfigShellToolType::Streamable
@@ -83,7 +79,6 @@ impl ToolsConfig {
             web_search_request: *include_web_search_request,
             include_view_image_tool: *include_view_image_tool,
             experimental_unified_exec_tool: *experimental_unified_exec_tool,
-            include_agent_tool: *include_agent_tool,
             experimental_supported_tools: model_family.experimental_supported_tools.clone(),
         }
     }
@@ -261,53 +256,6 @@ fn create_view_image_tool() -> ToolSpec {
             additional_properties: Some(false.into()),
         },
     })
-}
-
-fn create_agent_tool(agent_names: &[String]) -> ResponsesApiTool {
-    let agent_list = if agent_names.is_empty() {
-        "general".to_string()
-    } else {
-        agent_names.join(", ")
-    };
-
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "agent".to_string(),
-        JsonSchema::String {
-            description: Some(format!(
-                "Name of the agent to use (available: {agent_list})"
-            )),
-        },
-    );
-    properties.insert(
-        "task".to_string(),
-        JsonSchema::String {
-            description: Some("Specific task for the agent to perform autonomously".to_string()),
-        },
-    );
-    properties.insert(
-        "context".to_string(),
-        JsonSchema::String {
-            description: Some("Optional additional context to provide to the agent".to_string()),
-        },
-    );
-    properties.insert(
-        "model".to_string(),
-        JsonSchema::String {
-            description: Some("Optional model override for the agent".to_string()),
-        },
-    );
-
-    ResponsesApiTool {
-        name: "agent".to_string(),
-        description: "Spawn a specialized sub-agent to work on a focused task. The agent runs with the same workspace permissions and writes its results back to the main conversation.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["task".to_string()]),
-            additional_properties: Some(false.into()),
-        },
-    }
 }
 
 fn create_test_sync_tool() -> ToolSpec {
@@ -615,12 +563,13 @@ pub(crate) fn build_specs(
     use crate::exec_command::WRITE_STDIN_TOOL_NAME;
     use crate::exec_command::create_exec_command_tool_for_responses_api;
     use crate::exec_command::create_write_stdin_tool_for_responses_api;
-    use crate::tools::handlers::AgentHandler;
     use crate::tools::handlers::ApplyPatchHandler;
+    use crate::tools::handlers::DelegateWorkerHandler;
     use crate::tools::handlers::ExecStreamHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
+    use crate::tools::handlers::ReviewAgentHandler;
     use crate::tools::handlers::SessionHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
@@ -638,7 +587,8 @@ pub(crate) fn build_specs(
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let session_handler = Arc::new(SessionHandler);
-    let agent_handler = Arc::new(AgentHandler);
+    let review_agent_handler = Arc::new(ReviewAgentHandler);
+    let delegate_worker_handler = Arc::new(DelegateWorkerHandler);
 
     if config.experimental_unified_exec_tool {
         builder.push_spec(create_unified_exec_tool());
@@ -683,11 +633,40 @@ pub(crate) fn build_specs(
     }));
     builder.register_handler("permanently_terminate_session", session_handler);
 
-    if config.include_agent_tool {
-        let agent_names = AgentRegistry::global().agent_names();
-        builder.push_spec(ToolSpec::Function(create_agent_tool(&agent_names)));
-        builder.register_handler("agent", agent_handler);
-    }
+    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+        name: "request_code_review".to_string(),
+        description: "Request a comprehensive code review of recent changes. Optionally provide a custom review plan and scope (HEAD diff, commit hash, or range).".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: {
+                let mut p = std::collections::BTreeMap::new();
+                p.insert("plan".to_string(), JsonSchema::String { description: Some("Optional custom review plan text".to_string()) });
+                p.insert("scope".to_string(), JsonSchema::Object { properties: Default::default(), required: None, additional_properties: Some(true.into()) });
+                p.insert("model".to_string(), JsonSchema::String { description: Some("Optional model override for the reviewer".to_string()) });
+                p
+            },
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    }));
+    builder.register_handler("request_code_review", review_agent_handler);
+
+    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+        name: "delegate_to_worker".to_string(),
+        description: "Delegate work to a worker agent with a provided plan. Optionally specify a worker model.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: {
+                let mut p = std::collections::BTreeMap::new();
+                p.insert("worker_plan".to_string(), JsonSchema::String { description: Some("Detailed plan/instructions for the worker agent".to_string()) });
+                p.insert("worker_model".to_string(), JsonSchema::String { description: Some("Optional worker model".to_string()) });
+                p
+            },
+            required: Some(vec!["worker_plan".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    }));
+    builder.register_handler("delegate_to_worker", delegate_worker_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -810,7 +789,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
 
@@ -820,7 +798,8 @@ mod tests {
                 "unified_exec",
                 "update_plan",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "web_search",
                 "view_image",
             ],
@@ -838,7 +817,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(&config, Some(HashMap::new())).build();
 
@@ -848,7 +826,8 @@ mod tests {
                 "unified_exec",
                 "update_plan",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "web_search",
                 "view_image",
             ],
@@ -868,7 +847,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: false,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -888,7 +866,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: false,
             experimental_unified_exec_tool: false,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(&config, None).build();
 
@@ -915,7 +892,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(
             &config,
@@ -961,7 +937,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "web_search",
                 "view_image",
                 "test_server/do_something_cool",
@@ -969,7 +946,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[5].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1023,7 +1000,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1082,7 +1058,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "view_image",
                 "test_server/cool",
                 "test_server/do",
@@ -1103,7 +1080,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
 
         let (tools, _) = build_specs(
@@ -1135,7 +1111,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1144,7 +1121,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[6].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1175,7 +1152,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
 
         let (tools, _) = build_specs(
@@ -1205,7 +1181,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1213,7 +1190,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -1242,7 +1219,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
 
         let (tools, _) = build_specs(
@@ -1272,7 +1248,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1280,7 +1257,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1312,7 +1289,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
 
         let (tools, _) = build_specs(
@@ -1342,7 +1318,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1350,7 +1327,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
@@ -1394,7 +1371,6 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
-            include_agent_tool: true,
         });
         let (tools, _) = build_specs(
             &config,
@@ -1449,7 +1425,8 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "agent",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1458,7 +1435,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[6].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
