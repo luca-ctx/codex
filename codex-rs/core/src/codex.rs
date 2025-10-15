@@ -17,16 +17,13 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::ConversationPathResponseEvent;
 use codex_protocol::protocol::ExitedReviewModeEvent;
-use codex_protocol::protocol::McpAuthStatus;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
-use futures::future::BoxFuture;
 use futures::prelude::*;
-use futures::stream::FuturesOrdered;
 use mcp_types::CallToolResult;
 use serde_json;
 use serde_json::Value;
@@ -58,7 +55,6 @@ use crate::exec_command::WriteStdinParams;
 use crate::executor::Executor;
 use crate::executor::ExecutorConfig;
 use crate::executor::normalize_exec_result;
-use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
@@ -101,7 +97,6 @@ use crate::rollout::RolloutRecorderParams;
 use crate::shell;
 use crate::state::ActiveTurn;
 use crate::state::SessionServices;
-use crate::state::TaskKind;
 use crate::tasks::CompactTask;
 use crate::tasks::RegularTask;
 use crate::tasks::ReviewTask;
@@ -368,32 +363,14 @@ impl Session {
 
         let mcp_fut = McpConnectionManager::new(
             config.mcp_servers.clone(),
-            config
-                .features
-                .enabled(crate::features::Feature::RmcpClient),
-            config.mcp_oauth_credentials_store_mode,
+            config.use_experimental_use_rmcp_client,
         );
         let default_shell_fut = shell::default_user_shell();
         let history_meta_fut = crate::message_history::history_metadata(&config);
-        let auth_statuses_fut = compute_auth_statuses(
-            config.mcp_servers.iter(),
-            config.mcp_oauth_credentials_store_mode,
-        );
 
         // Join all independent futures.
-        let (
-            rollout_recorder,
-            mcp_res,
-            default_shell,
-            (history_log_id, history_entry_count),
-            auth_statuses,
-        ) = tokio::join!(
-            rollout_fut,
-            mcp_fut,
-            default_shell_fut,
-            history_meta_fut,
-            auth_statuses_fut
-        );
+        let (rollout_recorder, mcp_res, default_shell, (history_log_id, history_entry_count)) =
+            tokio::join!(rollout_fut, mcp_fut, default_shell_fut, history_meta_fut);
 
         let rollout_recorder = rollout_recorder.map_err(|e| {
             error!("failed to initialize rollout recorder: {e:#}");
@@ -420,24 +397,11 @@ impl Session {
         // Surface individual client start-up failures to the user.
         if !failed_clients.is_empty() {
             for (server_name, err) in failed_clients {
-                let log_message =
-                    format!("MCP client for `{server_name}` failed to start: {err:#}");
-                error!("{log_message}");
-                let display_message = if matches!(
-                    auth_statuses.get(&server_name),
-                    Some(McpAuthStatus::NotLoggedIn)
-                ) {
-                    format!(
-                        "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}` to log in."
-                    )
-                } else {
-                    log_message
-                };
+                let message = format!("MCP client for `{server_name}` failed to start: {err:#}");
+                error!("{message}");
                 post_session_configured_error_events.push(Event {
                     id: INITIAL_SUBMIT_ID.to_owned(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: display_message,
-                    }),
+                    msg: EventMsg::Error(ErrorEvent { message }),
                 });
             }
         }
@@ -447,7 +411,6 @@ impl Session {
             config.model.as_str(),
             config.model_family.slug.as_str(),
             auth_manager.auth().and_then(|a| a.get_account_id()),
-            auth_manager.auth().and_then(|a| a.get_account_email()),
             auth_manager.auth().map(|a| a.mode),
             config.otel.log_user_prompt,
             terminal::user_agent(),
@@ -481,7 +444,13 @@ impl Session {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
                 model_family: &config.model_family,
-                features: &config.features,
+                include_plan_tool: config.include_plan_tool,
+                include_apply_patch_tool: config.include_apply_patch_tool,
+                include_web_search_request: config.tools_web_search_request,
+                use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                include_view_image_tool: config.include_view_image_tool,
+                experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                include_agent_tool: true,
             }),
             user_instructions,
             base_instructions,
@@ -623,7 +592,6 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
-        let parsed_cmd = parse_command(&command);
         let event = Event {
             id: event_id,
             msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
@@ -631,7 +599,6 @@ impl Session {
                 command,
                 cwd,
                 reason,
-                parsed_cmd,
             }),
         };
         self.send_event(event).await;
@@ -887,7 +854,10 @@ impl Session {
                 call_id,
                 command: command_for_display.clone(),
                 cwd,
-                parsed_cmd: parse_command(&command_for_display),
+                parsed_cmd: parse_command(&command_for_display)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
             }),
         };
         let event = Event {
@@ -1224,7 +1194,13 @@ async fn submission_loop(
 
                 let tools_config = ToolsConfig::new(&ToolsConfigParams {
                     model_family: &effective_family,
-                    features: &config.features,
+                    include_plan_tool: config.include_plan_tool,
+                    include_apply_patch_tool: config.include_apply_patch_tool,
+                    include_web_search_request: config.tools_web_search_request,
+                    use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+                    include_view_image_tool: config.include_view_image_tool,
+                    experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                    include_agent_tool: true,
                 });
 
                 let new_turn_context = TurnContext {
@@ -1321,7 +1297,15 @@ async fn submission_loop(
                         client,
                         tools_config: ToolsConfig::new(&ToolsConfigParams {
                             model_family: &model_family,
-                            features: &config.features,
+                            include_plan_tool: config.include_plan_tool,
+                            include_apply_patch_tool: config.include_apply_patch_tool,
+                            include_web_search_request: config.tools_web_search_request,
+                            use_streamable_shell_tool: config
+                                .use_experimental_streamable_shell_tool,
+                            include_view_image_tool: config.include_view_image_tool,
+                            experimental_unified_exec_tool: config
+                                .use_experimental_unified_exec_tool,
+                            include_agent_tool: true,
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
@@ -1421,18 +1405,10 @@ async fn submission_loop(
 
                 // This is a cheap lookup from the connection manager's cache.
                 let tools = sess.services.mcp_connection_manager.list_all_tools();
-                let auth_statuses = compute_auth_statuses(
-                    config.mcp_servers.iter(),
-                    config.mcp_oauth_credentials_store_mode,
-                )
-                .await;
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::McpListToolsResponse(
-                        crate::protocol::McpListToolsResponseEvent {
-                            tools,
-                            auth_statuses,
-                        },
+                        crate::protocol::McpListToolsResponseEvent { tools },
                     ),
                 };
                 sess.send_event(event).await;
@@ -1553,15 +1529,15 @@ pub(crate) async fn spawn_review_thread(
     let model = config.review_model.clone();
     let review_model_family = find_family_for_model(&model)
         .unwrap_or_else(|| parent_turn_context.client.get_model_family());
-    // For reviews, disable plan, web_search, view_image regardless of global settings.
-    let mut review_features = config.features.clone();
-    review_features.disable(crate::features::Feature::PlanTool);
-    review_features.disable(crate::features::Feature::WebSearchRequest);
-    review_features.disable(crate::features::Feature::ViewImageTool);
-    review_features.disable(crate::features::Feature::StreamableShell);
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &review_model_family,
-        features: &review_features,
+        include_plan_tool: false,
+        include_apply_patch_tool: config.include_apply_patch_tool,
+        include_web_search_request: false,
+        use_streamable_shell_tool: false,
+        include_view_image_tool: false,
+        experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+        include_agent_tool: false,
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
@@ -1614,7 +1590,7 @@ pub(crate) async fn spawn_review_thread(
 
     // Seed the child task with the review prompt as the initial user message.
     let input: Vec<InputItem> = vec![InputItem::Text {
-        text: review_prompt,
+        text: format!("{base_instructions}\n\n---\n\nNow, here's your task: {review_prompt}"),
     }];
     let tc = Arc::new(review_turn_context);
 
@@ -1652,7 +1628,6 @@ pub(crate) async fn run_task(
     turn_context: Arc<TurnContext>,
     sub_id: String,
     input: Vec<InputItem>,
-    task_kind: TaskKind,
 ) -> Option<String> {
     if input.is_empty() {
         return None;
@@ -1737,7 +1712,6 @@ pub(crate) async fn run_task(
             Arc::clone(&turn_diff_tracker),
             sub_id.clone(),
             turn_input,
-            task_kind,
         )
         .await
         {
@@ -1890,7 +1864,6 @@ pub(crate) async fn run_task(
                     );
                     sess.notifier()
                         .notify(&UserNotification::AgentTurnComplete {
-                            thread_id: sess.conversation_id.to_string(),
                             turn_id: sub_id.clone(),
                             input_messages: turn_input_messages,
                             last_assistant_message: last_agent_message.clone(),
@@ -1983,7 +1956,6 @@ async fn run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     sub_id: String,
     input: Vec<ResponseItem>,
-    task_kind: TaskKind,
 ) -> CodexResult<TurnRunResult> {
     let mcp_tools = sess.services.mcp_connection_manager.list_all_tools();
     let router = Arc::new(ToolRouter::from_config(
@@ -2035,7 +2007,6 @@ async fn run_turn(
             Arc::clone(&turn_diff_tracker),
             &sub_id,
             &prompt,
-            task_kind,
         )
         .await
         {
@@ -2115,7 +2086,9 @@ async fn run_turn(
                     // at a seemingly frozen screen.
                     sess.notify_stream_error(
                         &sub_id,
-                        format!("Re-connecting... {retries}/{max_retries}"),
+                        format!(
+                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
+                        ),
                     )
                     .await;
 
@@ -2188,7 +2161,6 @@ async fn try_run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     sub_id: &str,
     prompt: &Prompt,
-    task_kind: TaskKind,
 ) -> CodexResult<TurnRunResult> {
     // call_ids that are part of this response.
     let completed_call_ids = prompt
@@ -2254,21 +2226,16 @@ async fn try_run_turn(
         summary: turn_context.client.get_reasoning_summary(),
     });
     sess.persist_rollout_items(&[rollout_item]).await;
-    let mut stream = turn_context
-        .client
-        .clone()
-        .stream_with_task_kind(prompt.as_ref(), task_kind)
-        .await?;
+    let mut stream = turn_context.client.clone().stream(&prompt).await?;
 
-    let tool_runtime = ToolCallRuntime::new(
+    let mut output = Vec::new();
+    let mut tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),
         Arc::clone(&sess),
         Arc::clone(&turn_context),
         Arc::clone(&turn_diff_tracker),
         sub_id.to_string(),
     );
-    let mut output: FuturesOrdered<BoxFuture<CodexResult<ProcessedResponseItem>>> =
-        FuturesOrdered::new();
 
     loop {
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
@@ -2276,8 +2243,9 @@ async fn try_run_turn(
         // `response.completed`) bubble up and trigger the caller's retry logic.
         let event = stream.next().await;
         let event = match event {
-            Some(res) => res?,
+            Some(event) => event,
             None => {
+                tool_runtime.abort_all();
                 return Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                     None,
@@ -2285,8 +2253,14 @@ async fn try_run_turn(
             }
         };
 
-        let add_completed = &mut |response_item: ProcessedResponseItem| {
-            output.push_back(future::ready(Ok(response_item)).boxed());
+        let event = match event {
+            Ok(ev) => ev,
+            Err(e) => {
+                tool_runtime.abort_all();
+                // Propagate the underlying stream error to the caller (run_turn), which
+                // will apply the configured `stream_max_retries` policy.
+                return Err(e);
+            }
         };
 
         match event {
@@ -2296,18 +2270,14 @@ async fn try_run_turn(
                     Ok(Some(call)) => {
                         let payload_preview = call.payload.log_payload().into_owned();
                         tracing::info!("ToolCall: {} {}", call.tool_name, payload_preview);
-
-                        let response = tool_runtime.handle_tool_call(call);
-
-                        output.push_back(
-                            async move {
-                                Ok(ProcessedResponseItem {
-                                    item,
-                                    response: Some(response.await?),
-                                })
-                            }
-                            .boxed(),
-                        );
+                        let index = output.len();
+                        output.push(ProcessedResponseItem {
+                            item,
+                            response: None,
+                        });
+                        tool_runtime
+                            .handle_tool_call(call, index, output.as_mut_slice())
+                            .await?;
                     }
                     Ok(None) => {
                         let response = handle_non_tool_response_item(
@@ -2317,7 +2287,7 @@ async fn try_run_turn(
                             item.clone(),
                         )
                         .await?;
-                        add_completed(ProcessedResponseItem { item, response });
+                        output.push(ProcessedResponseItem { item, response });
                     }
                     Err(FunctionCallError::MissingLocalShellCallId) => {
                         let msg = "LocalShellCall without call_id or id";
@@ -2334,7 +2304,7 @@ async fn try_run_turn(
                                 success: None,
                             },
                         };
-                        add_completed(ProcessedResponseItem {
+                        output.push(ProcessedResponseItem {
                             item,
                             response: Some(response),
                         });
@@ -2347,7 +2317,7 @@ async fn try_run_turn(
                                 success: None,
                             },
                         };
-                        add_completed(ProcessedResponseItem {
+                        output.push(ProcessedResponseItem {
                             item,
                             response: Some(response),
                         });
@@ -2378,7 +2348,7 @@ async fn try_run_turn(
                 sess.update_token_usage_info(sub_id, turn_context.as_ref(), token_usage.as_ref())
                     .await;
 
-                let processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
+                tool_runtime.resolve_pending(output.as_mut_slice()).await?;
 
                 let unified_diff = {
                     let mut tracker = turn_diff_tracker.lock().await;
@@ -2394,7 +2364,7 @@ async fn try_run_turn(
                 }
 
                 let result = TurnRunResult {
-                    processed_items,
+                    processed_items: output,
                     total_token_usage: token_usage.clone(),
                 };
 
@@ -2868,7 +2838,6 @@ mod tests {
             config.model.as_str(),
             config.model_family.slug.as_str(),
             None,
-            Some("test@test.com".to_string()),
             Some(AuthMode::ChatGPT),
             false,
             "test".to_string(),
@@ -2898,7 +2867,13 @@ mod tests {
         );
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &config.model_family,
-            features: &config.features,
+            include_plan_tool: config.include_plan_tool,
+            include_apply_patch_tool: config.include_apply_patch_tool,
+            include_web_search_request: config.tools_web_search_request,
+            use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+            include_view_image_tool: config.include_view_image_tool,
+            experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+            include_agent_tool: true,
         });
         let turn_context = TurnContext {
             client,
@@ -2966,7 +2941,13 @@ mod tests {
         );
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &config.model_family,
-            features: &config.features,
+            include_plan_tool: config.include_plan_tool,
+            include_apply_patch_tool: config.include_apply_patch_tool,
+            include_web_search_request: config.tools_web_search_request,
+            use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
+            include_view_image_tool: config.include_view_image_tool,
+            experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+            include_agent_tool: true,
         });
         let turn_context = Arc::new(TurnContext {
             client,

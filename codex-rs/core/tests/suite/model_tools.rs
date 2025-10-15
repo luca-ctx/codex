@@ -97,8 +97,7 @@ async fn model_selects_expected_tools() {
         vec![
             "local_shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
-            "delegate_to_worker".to_string(),
+            "agent".to_string(),
         ],
         "codex-mini-latest should expose the local shell tool",
     );
@@ -109,8 +108,7 @@ async fn model_selects_expected_tools() {
         vec![
             "shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
-            "delegate_to_worker".to_string(),
+            "agent".to_string(),
         ],
         "o3 should expose the generic shell tool",
     );
@@ -121,8 +119,7 @@ async fn model_selects_expected_tools() {
         vec![
             "shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
-            "delegate_to_worker".to_string(),
+            "agent".to_string(),
             "apply_patch".to_string(),
         ],
         "gpt-5-codex should expose the apply_patch tool",
