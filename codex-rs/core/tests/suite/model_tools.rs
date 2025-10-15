@@ -94,21 +94,37 @@ async fn model_selects_expected_tools() {
     let codex_tools = collect_tool_identifiers_for_model("codex-mini-latest").await;
     assert_eq!(
         codex_tools,
-        vec!["local_shell".to_string()],
+        vec![
+            "local_shell".to_string(),
+            "permanently_terminate_session".to_string(),
+            "request_code_review".to_string(),
+            "delegate_to_worker".to_string(),
+        ],
         "codex-mini-latest should expose the local shell tool",
     );
 
     let o3_tools = collect_tool_identifiers_for_model("o3").await;
     assert_eq!(
         o3_tools,
-        vec!["shell".to_string()],
+        vec![
+            "shell".to_string(),
+            "permanently_terminate_session".to_string(),
+            "request_code_review".to_string(),
+            "delegate_to_worker".to_string(),
+        ],
         "o3 should expose the generic shell tool",
     );
 
     let gpt5_codex_tools = collect_tool_identifiers_for_model("gpt-5-codex").await;
     assert_eq!(
         gpt5_codex_tools,
-        vec!["shell".to_string(), "apply_patch".to_string(),],
+        vec![
+            "shell".to_string(),
+            "permanently_terminate_session".to_string(),
+            "request_code_review".to_string(),
+            "delegate_to_worker".to_string(),
+            "apply_patch".to_string(),
+        ],
         "gpt-5-codex should expose the apply_patch tool",
     );
 }

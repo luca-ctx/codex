@@ -967,7 +967,15 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &[
+                "unified_exec",
+                "update_plan",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
+                "web_search",
+                "view_image",
+            ],
         );
     }
 
@@ -986,7 +994,15 @@ mod tests {
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &[
+                "unified_exec",
+                "update_plan",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
+                "web_search",
+                "view_image",
+            ],
         );
     }
 
@@ -1093,6 +1109,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "web_search",
                 "view_image",
                 "test_server/do_something_cool",
@@ -1100,7 +1119,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[3].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1208,6 +1227,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "view_image",
                 "test_server/cool",
                 "test_server/do",
@@ -1256,6 +1278,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1264,7 +1289,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[4].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1321,6 +1346,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1328,7 +1356,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[4].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -1384,6 +1412,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1391,7 +1422,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[4].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1449,6 +1480,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1456,7 +1490,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[4].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
@@ -1551,6 +1585,9 @@ mod tests {
             &tools,
             &[
                 "unified_exec",
+                "permanently_terminate_session",
+                "request_code_review",
+                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1559,7 +1596,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[4].spec,
+            tools[7].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {

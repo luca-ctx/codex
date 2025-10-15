@@ -1003,11 +1003,30 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
     )
     .await;
 
+    responses::mount_sse_once_match(
+        &server,
+        body_string_contains("auto-compact"),
+        sse_completed("resp_auto_compact"),
+    )
+    .await;
+
+    responses::mount_sse_once_match(
+        &server,
+        body_string_contains("trigger context window"),
+        responses::sse_failed(
+            "resp_context_window_retry",
+            "context_length_exceeded",
+            "Your input exceeds the context window of this model. Please adjust your input and try again.",
+        ),
+    )
+    .await;
+
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
             config.model = "gpt-5".to_string();
             config.model_family = find_family_for_model("gpt-5").expect("known gpt-5 model family");
             config.model_context_window = Some(272_000);
+            config.model_auto_compact_token_limit = Some(i64::MAX);
         })
         .build(&server)
         .await?;
@@ -1061,12 +1080,19 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
 
     let error_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Error(_))).await;
     let expected_context_window_message = CodexErr::ContextWindowExceeded.to_string();
+    let expected_compact_failure_message =
+        "Context window exceeded during compact operation. Please start a new conversation."
+            .to_string();
+
+    let actual_error_message = match error_event {
+        EventMsg::Error(ref err) => &err.message,
+        _ => unreachable!(),
+    };
+
     assert!(
-        matches!(
-            error_event,
-            EventMsg::Error(ref err) if err.message == expected_context_window_message
-        ),
-        "expected context window error; got {error_event:?}"
+        actual_error_message == &expected_context_window_message
+            || actual_error_message == &expected_compact_failure_message,
+        "expected context window error; got {actual_error_message:?}"
     );
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;

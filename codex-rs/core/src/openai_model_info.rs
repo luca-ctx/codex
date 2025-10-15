@@ -20,10 +20,16 @@ pub(crate) struct ModelInfo {
 
 impl ModelInfo {
     const fn new(context_window: u64, max_output_tokens: u64) -> Self {
+        let auto_compact_token_limit = if context_window == 0 {
+            0
+        } else {
+            // Trigger automatic compaction once 95% of the context window is filled.
+            ((context_window as i128 * 95) / 100) as i64
+        };
         Self {
             context_window,
             max_output_tokens,
-            auto_compact_token_limit: None,
+            auto_compact_token_limit: Some(auto_compact_token_limit),
         }
     }
 }
@@ -62,16 +68,33 @@ pub(crate) fn get_model_info(model_family: &ModelFamily) -> Option<ModelInfo> {
         // https://platform.openai.com/docs/models/gpt-3.5-turbo
         "gpt-3.5-turbo" => Some(ModelInfo::new(16_385, 4_096)),
 
-        _ if slug.starts_with("gpt-5-codex") => Some(ModelInfo {
-            context_window: 272_000,
-            max_output_tokens: 128_000,
-            auto_compact_token_limit: Some(350_000),
-        }),
+        _ if slug.starts_with("gpt-5-codex") => Some(ModelInfo::new(272_000, 128_000)),
 
         _ if slug.starts_with("gpt-5") => Some(ModelInfo::new(272_000, 128_000)),
 
         _ if slug.starts_with("codex-") => Some(ModelInfo::new(272_000, 128_000)),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn model_info_new_sets_auto_compact_limit_to_ninety_five_percent() {
+        let info = ModelInfo::new(10_000, 2_000);
+        assert_eq!(info.auto_compact_token_limit, Some(9_500));
+    }
+
+    #[test]
+    fn get_model_info_uses_default_ninety_five_percent_threshold() {
+        let model_family =
+            crate::model_family::find_family_for_model("gpt-5-codex").expect("gpt-5-codex family");
+        let info = get_model_info(&model_family).expect("model info");
+        let expected = (info.context_window as i64 * 95) / 100;
+        assert_eq!(info.auto_compact_token_limit, Some(expected));
     }
 }

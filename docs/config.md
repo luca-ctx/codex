@@ -742,6 +742,10 @@ In general, Codex knows the context window for the most common OpenAI models, bu
 
 This is analogous to `model_context_window`, but for the maximum number of output tokens for the model.
 
+## model_auto_compact_token_limit
+
+Sets the token count that triggers automatic compaction of the active conversation history. When unset, Codex now derives this automatically as roughly 95% of the selected model’s context window so the compact pass has enough room to run. Override the value if you want more or less headroom, or disable the feature entirely by setting it to `0`.
+
 ## project_doc_max_bytes
 
 Maximum number of bytes to read from an `AGENTS.md` file to include in the instructions sent with the first turn of a session. Defaults to 32 KiB.
@@ -784,6 +788,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `model_provider`                                 | string                                                            | Provider id from `model_providers` (default: `openai`).                                                                    |
 | `model_context_window`                           | number                                                            | Context window tokens.                                                                                                     |
 | `model_max_output_tokens`                        | number                                                            | Max output tokens.                                                                                                         |
+| `model_auto_compact_token_limit`                 | number                                                            | Token threshold for auto-compaction; defaults to ~95% of the context window when omitted.                                  |
 | `approval_policy`                                | `untrusted` \| `on-failure` \| `on-request` \| `never`            | When to prompt for approval.                                                                                               |
 | `sandbox_mode`                                   | `read-only` \| `workspace-write` \| `danger-full-access`          | OS sandbox policy.                                                                                                         |
 | `sandbox_workspace_write.writable_roots`         | array<string>                                                     | Extra writable roots in workspace‑write.                                                                                   |
