@@ -25,9 +25,11 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
 use futures::prelude::*;
+use tracing::warn;
 
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+const FALLBACK_SUMMARY: &str = "Auto-compact fallback: trimmed conversation without model summary because the compact prompt exceeded the context window.";
 
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
@@ -142,13 +144,23 @@ async fn run_compact_task_inner(
                 }
                 sess.set_total_tokens_full(&sub_id, turn_context.as_ref())
                     .await;
-                let event = Event {
-                    id: sub_id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "Context window exceeded during compact operation. Please start a new conversation.".to_string(),
-                    }),
-                };
-                sess.send_event(event).await;
+                warn!(
+                    "Auto-compaction prompt exceeded the context window even after trimming history; activating fallback trimming."
+                );
+                sess.notify_background_event(
+                    &sub_id,
+                    "Auto-compaction prompt still exceeded the context window. Falling back to trimming conversation history without an LLM summary.",
+                )
+                .await;
+                let budget_hint =
+                    compute_target_budget(turn_context.as_ref(), target_budget_tokens);
+                fallback_trim_history_and_finish(
+                    Arc::clone(&sess),
+                    Arc::clone(&turn_context),
+                    &sub_id,
+                    budget_hint,
+                )
+                .await;
                 return;
             }
             Err(e) => {
@@ -180,30 +192,24 @@ async fn run_compact_task_inner(
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
     let user_messages = collect_user_messages(&history_snapshot);
     let initial_context = sess.build_initial_context(turn_context.as_ref());
-    let initial_context_snapshot = initial_context.clone();
+    let budget = compute_target_budget(turn_context.as_ref(), target_budget_tokens);
     let mut new_history = build_compacted_history_with_budget(
-        initial_context_snapshot.clone(),
+        initial_context.clone(),
         &user_messages,
         &summary_text,
-        target_budget_tokens,
+        budget,
     );
-    // Iterative shrink: if target budget was provided and we still overflow, drop oldest user chunks.
-    if let Some(budget) = target_budget_tokens {
-        // Estimate by concatenating user text we just bridged; if too big, strip prior messages progressively.
-        let mut attempts = 0usize;
-        while attempts < 3 {
-            let est_tokens = super::estimate_tokens_for_items(&new_history);
-            if est_tokens <= budget {
-                break;
-            }
-            attempts += 1;
-            // Keep only initial context and the last bridge message if present.
-            let mut kept: Vec<ResponseItem> = initial_context_snapshot.clone();
-            if let Some(last) = new_history.last().cloned() {
-                kept.push(last);
-            }
-            new_history = kept;
-        }
+    let trimmed_attempts = budget
+        .map(|b| enforce_budget(&initial_context, &mut new_history, b))
+        .unwrap_or(0);
+    if trimmed_attempts > 0 {
+        sess.notify_background_event(
+            &sub_id,
+            format!(
+                "Removed additional history content {trimmed_attempts} time(s) to keep the conversation within the context window."
+            ),
+        )
+        .await;
     }
     sess.replace_history(new_history).await;
 
@@ -306,6 +312,101 @@ pub(crate) fn build_compacted_history_with_budget(
         content: vec![ContentItem::InputText { text: bridge }],
     });
     history
+}
+
+async fn fallback_trim_history_and_finish(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    sub_id: &str,
+    explicit_budget: Option<u64>,
+) {
+    let budget = compute_target_budget(turn_context.as_ref(), explicit_budget);
+    let history_snapshot = sess.history_snapshot().await;
+    let user_messages = collect_user_messages(&history_snapshot);
+    let initial_context = sess.build_initial_context(turn_context.as_ref());
+    let mut new_history = build_compacted_history_with_budget(
+        initial_context.clone(),
+        &user_messages,
+        FALLBACK_SUMMARY,
+        budget,
+    );
+    let trimmed_attempts = budget
+        .map(|b| enforce_budget(&initial_context, &mut new_history, b))
+        .unwrap_or(0);
+    if trimmed_attempts > 0 {
+        sess.notify_background_event(
+            sub_id,
+            format!(
+                "Fallback auto-compaction removed additional history content {trimmed_attempts} time(s) to stay within the context window."
+            ),
+        )
+        .await;
+    }
+    sess.replace_history(new_history).await;
+
+    let rollout_item = RolloutItem::Compacted(CompactedItem {
+        message: FALLBACK_SUMMARY.to_string(),
+    });
+    sess.persist_rollout_items(&[rollout_item]).await;
+
+    let event = Event {
+        id: sub_id.to_string(),
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "Compact task completed".to_string(),
+        }),
+    };
+    sess.send_event(event).await;
+}
+
+fn compute_target_budget(turn_context: &TurnContext, explicit_budget: Option<u64>) -> Option<u64> {
+    if explicit_budget.is_some() {
+        return explicit_budget;
+    }
+    let context_window = turn_context.client.get_model_context_window()?;
+    let max_output = turn_context
+        .client
+        .get_model_max_output_tokens()
+        .unwrap_or(8_192);
+    let reserved = (context_window as f64 * 0.2) as u64;
+    Some(
+        context_window
+            .saturating_sub(reserved)
+            .saturating_sub(max_output),
+    )
+}
+
+fn enforce_budget(
+    initial_context: &[ResponseItem],
+    history: &mut Vec<ResponseItem>,
+    budget_tokens: u64,
+) -> usize {
+    let mut attempts = 0usize;
+    while attempts < 3 && estimate_tokens(history) > budget_tokens {
+        attempts += 1;
+        let mut kept = initial_context.to_vec();
+        if let Some(last) = history.last().cloned() {
+            kept.push(last);
+        }
+        *history = kept;
+    }
+    attempts
+}
+
+fn estimate_tokens(items: &[ResponseItem]) -> u64 {
+    let mut bytes = 0usize;
+    for item in items {
+        if let ResponseItem::Message { content, .. } = item {
+            for piece in content {
+                match piece {
+                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                        bytes = bytes.saturating_add(text.len());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (bytes as u64).div_ceil(4)
 }
 
 async fn drain_to_completed(
@@ -512,5 +613,43 @@ mod tests {
             estimated_tokens <= 10_000,
             "estimated {estimated_tokens} > budget"
         );
+    }
+
+    #[test]
+    fn enforce_budget_drops_middle_messages_and_preserves_tail() {
+        let initial_context = vec![ResponseItem::Message {
+            id: None,
+            role: "system".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "system".to_string(),
+            }],
+        }];
+        let mut history = initial_context.clone();
+        history.push(ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "x".repeat(400),
+            }],
+        });
+        history.push(ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "final bridge".to_string(),
+            }],
+        });
+
+        let attempts = enforce_budget(&initial_context, &mut history, 10);
+
+        assert_eq!(attempts, 1);
+        assert_eq!(history.len(), initial_context.len() + 1);
+        let ResponseItem::Message { content, .. } = history.last().expect("last message") else {
+            panic!("expected message");
+        };
+        let ContentItem::InputText { text } = content.first().expect("text span") else {
+            panic!("expected text span");
+        };
+        assert_eq!(text, "final bridge");
     }
 }

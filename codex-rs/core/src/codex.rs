@@ -17,13 +17,17 @@ use codex_apply_patch::ApplyPatchAction;
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::ConversationPathResponseEvent;
 use codex_protocol::protocol::ExitedReviewModeEvent;
+use codex_protocol::protocol::McpAuthStatus;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
+use futures::future::BoxFuture;
+use futures::future::{self};
 use futures::prelude::*;
+use futures::stream::FuturesOrdered;
 use mcp_types::CallToolResult;
 use serde_json;
 use serde_json::Value;
@@ -55,6 +59,7 @@ use crate::exec_command::WriteStdinParams;
 use crate::executor::Executor;
 use crate::executor::ExecutorConfig;
 use crate::executor::normalize_exec_result;
+use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
@@ -364,13 +369,29 @@ impl Session {
         let mcp_fut = McpConnectionManager::new(
             config.mcp_servers.clone(),
             config.use_experimental_use_rmcp_client,
+            config.mcp_oauth_credentials_store_mode,
         );
         let default_shell_fut = shell::default_user_shell();
         let history_meta_fut = crate::message_history::history_metadata(&config);
+        let auth_statuses_fut = compute_auth_statuses(
+            config.mcp_servers.iter(),
+            config.mcp_oauth_credentials_store_mode,
+        );
 
         // Join all independent futures.
-        let (rollout_recorder, mcp_res, default_shell, (history_log_id, history_entry_count)) =
-            tokio::join!(rollout_fut, mcp_fut, default_shell_fut, history_meta_fut);
+        let (
+            rollout_recorder,
+            mcp_res,
+            default_shell,
+            (history_log_id, history_entry_count),
+            auth_statuses,
+        ) = tokio::join!(
+            rollout_fut,
+            mcp_fut,
+            default_shell_fut,
+            history_meta_fut,
+            auth_statuses_fut
+        );
 
         let rollout_recorder = rollout_recorder.map_err(|e| {
             error!("failed to initialize rollout recorder: {e:#}");
@@ -397,11 +418,24 @@ impl Session {
         // Surface individual client start-up failures to the user.
         if !failed_clients.is_empty() {
             for (server_name, err) in failed_clients {
-                let message = format!("MCP client for `{server_name}` failed to start: {err:#}");
-                error!("{message}");
+                let log_message =
+                    format!("MCP client for `{server_name}` failed to start: {err:#}");
+                error!("{log_message}");
+                let display_message = if matches!(
+                    auth_statuses.get(&server_name),
+                    Some(McpAuthStatus::NotLoggedIn)
+                ) {
+                    format!(
+                        "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}` to log in."
+                    )
+                } else {
+                    log_message
+                };
                 post_session_configured_error_events.push(Event {
                     id: INITIAL_SUBMIT_ID.to_owned(),
-                    msg: EventMsg::Error(ErrorEvent { message }),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: display_message,
+                    }),
                 });
             }
         }
@@ -411,6 +445,7 @@ impl Session {
             config.model.as_str(),
             config.model_family.slug.as_str(),
             auth_manager.auth().and_then(|a| a.get_account_id()),
+            auth_manager.auth().and_then(|a| a.get_account_email()),
             auth_manager.auth().map(|a| a.mode),
             config.otel.log_user_prompt,
             terminal::user_agent(),
@@ -591,6 +626,7 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        let parsed_cmd = parse_command(&command);
         let event = Event {
             id: event_id,
             msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
@@ -598,6 +634,7 @@ impl Session {
                 command,
                 cwd,
                 reason,
+                parsed_cmd,
             }),
         };
         self.send_event(event).await;
@@ -853,10 +890,7 @@ impl Session {
                 call_id,
                 command: command_for_display.clone(),
                 cwd,
-                parsed_cmd: parse_command(&command_for_display)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
+                parsed_cmd: parse_command(&command_for_display).into_iter().collect(),
             }),
         };
         let event = Event {
@@ -1402,10 +1436,18 @@ async fn submission_loop(
 
                 // This is a cheap lookup from the connection manager's cache.
                 let tools = sess.services.mcp_connection_manager.list_all_tools();
+                let auth_statuses = compute_auth_statuses(
+                    config.mcp_servers.iter(),
+                    config.mcp_oauth_credentials_store_mode,
+                )
+                .await;
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::McpListToolsResponse(
-                        crate::protocol::McpListToolsResponseEvent { tools },
+                        crate::protocol::McpListToolsResponseEvent {
+                            tools,
+                            auth_statuses,
+                        },
                     ),
                 };
                 sess.send_event(event).await;
@@ -1860,6 +1902,7 @@ pub(crate) async fn run_task(
                     );
                     sess.notifier()
                         .notify(&UserNotification::AgentTurnComplete {
+                            thread_id: sess.conversation_id.to_string(),
                             turn_id: sub_id.clone(),
                             input_messages: turn_input_messages,
                             last_assistant_message: last_agent_message.clone(),
@@ -2222,16 +2265,17 @@ async fn try_run_turn(
         summary: turn_context.client.get_reasoning_summary(),
     });
     sess.persist_rollout_items(&[rollout_item]).await;
-    let mut stream = turn_context.client.clone().stream(&prompt).await?;
+    let mut stream = turn_context.client.clone().stream(prompt.as_ref()).await?;
 
-    let mut output = Vec::new();
-    let mut tool_runtime = ToolCallRuntime::new(
+    let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),
         Arc::clone(&sess),
         Arc::clone(&turn_context),
         Arc::clone(&turn_diff_tracker),
         sub_id.to_string(),
     );
+    let mut output: FuturesOrdered<BoxFuture<CodexResult<ProcessedResponseItem>>> =
+        FuturesOrdered::new();
 
     loop {
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
@@ -2239,9 +2283,8 @@ async fn try_run_turn(
         // `response.completed`) bubble up and trigger the caller's retry logic.
         let event = stream.next().await;
         let event = match event {
-            Some(event) => event,
+            Some(res) => res?,
             None => {
-                tool_runtime.abort_all();
                 return Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                     None,
@@ -2249,14 +2292,8 @@ async fn try_run_turn(
             }
         };
 
-        let event = match event {
-            Ok(ev) => ev,
-            Err(e) => {
-                tool_runtime.abort_all();
-                // Propagate the underlying stream error to the caller (run_turn), which
-                // will apply the configured `stream_max_retries` policy.
-                return Err(e);
-            }
+        let add_completed = &mut |response_item: ProcessedResponseItem| {
+            output.push_back(future::ready(Ok(response_item)).boxed());
         };
 
         match event {
@@ -2266,14 +2303,17 @@ async fn try_run_turn(
                     Ok(Some(call)) => {
                         let payload_preview = call.payload.log_payload().into_owned();
                         tracing::info!("ToolCall: {} {}", call.tool_name, payload_preview);
-                        let index = output.len();
-                        output.push(ProcessedResponseItem {
-                            item,
-                            response: None,
-                        });
-                        tool_runtime
-                            .handle_tool_call(call, index, output.as_mut_slice())
-                            .await?;
+                        let response = tool_runtime.handle_tool_call(call);
+
+                        output.push_back(
+                            async move {
+                                Ok(ProcessedResponseItem {
+                                    item,
+                                    response: Some(response.await?),
+                                })
+                            }
+                            .boxed(),
+                        );
                     }
                     Ok(None) => {
                         let response = handle_non_tool_response_item(
@@ -2283,7 +2323,7 @@ async fn try_run_turn(
                             item.clone(),
                         )
                         .await?;
-                        output.push(ProcessedResponseItem { item, response });
+                        add_completed(ProcessedResponseItem { item, response });
                     }
                     Err(FunctionCallError::MissingLocalShellCallId) => {
                         let msg = "LocalShellCall without call_id or id";
@@ -2300,7 +2340,7 @@ async fn try_run_turn(
                                 success: None,
                             },
                         };
-                        output.push(ProcessedResponseItem {
+                        add_completed(ProcessedResponseItem {
                             item,
                             response: Some(response),
                         });
@@ -2313,7 +2353,7 @@ async fn try_run_turn(
                                 success: None,
                             },
                         };
-                        output.push(ProcessedResponseItem {
+                        add_completed(ProcessedResponseItem {
                             item,
                             response: Some(response),
                         });
@@ -2344,7 +2384,7 @@ async fn try_run_turn(
                 sess.update_token_usage_info(sub_id, turn_context.as_ref(), token_usage.as_ref())
                     .await;
 
-                tool_runtime.resolve_pending(output.as_mut_slice()).await?;
+                let processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
 
                 let unified_diff = {
                     let mut tracker = turn_diff_tracker.lock().await;
@@ -2360,7 +2400,7 @@ async fn try_run_turn(
                 }
 
                 let result = TurnRunResult {
-                    processed_items: output,
+                    processed_items,
                     total_token_usage: token_usage.clone(),
                 };
 
@@ -2833,6 +2873,7 @@ mod tests {
             conversation_id,
             config.model.as_str(),
             config.model_family.slug.as_str(),
+            None,
             None,
             Some(AuthMode::ChatGPT),
             false,

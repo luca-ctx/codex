@@ -1,5 +1,10 @@
 ## Advanced
 
+### Manual auto-compaction drill
+
+To simulate context-heavy sessions and observe the auto-compaction
+fallback behaviour, see the [manual auto-compaction guide](./manual-auto-compaction.md).
+
 ## Tracing / verbose logging
 
 Because Codex is written in Rust, it honors the `RUST_LOG` environment variable to configure its logging behavior.
