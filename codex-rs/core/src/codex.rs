@@ -59,6 +59,7 @@ use crate::exec_command::WriteStdinParams;
 use crate::executor::Executor;
 use crate::executor::ExecutorConfig;
 use crate::executor::normalize_exec_result;
+use crate::features::Feature;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::model_family::find_family_for_model;
@@ -475,16 +476,17 @@ impl Session {
             model_reasoning_summary,
             conversation_id,
         );
+        let features = &config.features;
         let turn_context = TurnContext {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
                 model_family: &config.model_family,
-                include_plan_tool: config.include_plan_tool,
-                include_apply_patch_tool: config.include_apply_patch_tool,
-                include_web_search_request: config.tools_web_search_request,
-                use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-                include_view_image_tool: config.include_view_image_tool,
-                experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                include_plan_tool: features.enabled(Feature::PlanTool),
+                include_apply_patch_tool: features.enabled(Feature::ApplyPatchFreeform),
+                include_web_search_request: features.enabled(Feature::WebSearchRequest),
+                use_streamable_shell_tool: features.enabled(Feature::StreamableShell),
+                include_view_image_tool: features.enabled(Feature::ViewImageTool),
+                experimental_unified_exec_tool: features.enabled(Feature::UnifiedExec),
             }),
             user_instructions,
             base_instructions,
@@ -1225,14 +1227,15 @@ async fn submission_loop(
                     .unwrap_or(prev.sandbox_policy.clone());
                 let new_cwd = cwd.clone().unwrap_or_else(|| prev.cwd.clone());
 
+                let features = &config.features;
                 let tools_config = ToolsConfig::new(&ToolsConfigParams {
                     model_family: &effective_family,
-                    include_plan_tool: config.include_plan_tool,
-                    include_apply_patch_tool: config.include_apply_patch_tool,
-                    include_web_search_request: config.tools_web_search_request,
-                    use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-                    include_view_image_tool: config.include_view_image_tool,
-                    experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+                    include_plan_tool: features.enabled(Feature::PlanTool),
+                    include_apply_patch_tool: features.enabled(Feature::ApplyPatchFreeform),
+                    include_web_search_request: features.enabled(Feature::WebSearchRequest),
+                    use_streamable_shell_tool: features.enabled(Feature::StreamableShell),
+                    include_view_image_tool: features.enabled(Feature::ViewImageTool),
+                    experimental_unified_exec_tool: features.enabled(Feature::UnifiedExec),
                 });
 
                 let new_turn_context = TurnContext {
@@ -1325,18 +1328,21 @@ async fn submission_loop(
                         sess.conversation_id,
                     );
 
+                    let feature_flags = &config.features;
                     let fresh_turn_context = TurnContext {
                         client,
                         tools_config: ToolsConfig::new(&ToolsConfigParams {
                             model_family: &model_family,
-                            include_plan_tool: config.include_plan_tool,
-                            include_apply_patch_tool: config.include_apply_patch_tool,
-                            include_web_search_request: config.tools_web_search_request,
-                            use_streamable_shell_tool: config
-                                .use_experimental_streamable_shell_tool,
-                            include_view_image_tool: config.include_view_image_tool,
-                            experimental_unified_exec_tool: config
-                                .use_experimental_unified_exec_tool,
+                            include_plan_tool: feature_flags.enabled(Feature::PlanTool),
+                            include_apply_patch_tool: feature_flags
+                                .enabled(Feature::ApplyPatchFreeform),
+                            include_web_search_request: feature_flags
+                                .enabled(Feature::WebSearchRequest),
+                            use_streamable_shell_tool: feature_flags
+                                .enabled(Feature::StreamableShell),
+                            include_view_image_tool: feature_flags.enabled(Feature::ViewImageTool),
+                            experimental_unified_exec_tool: feature_flags
+                                .enabled(Feature::UnifiedExec),
                         }),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
@@ -1568,14 +1574,19 @@ pub(crate) async fn spawn_review_thread(
     let model = config.review_model.clone();
     let review_model_family = find_family_for_model(&model)
         .unwrap_or_else(|| parent_turn_context.client.get_model_family());
+    let mut review_features = config.features.clone();
+    review_features.disable(crate::features::Feature::PlanTool);
+    review_features.disable(crate::features::Feature::WebSearchRequest);
+    review_features.disable(crate::features::Feature::ViewImageTool);
+    review_features.disable(crate::features::Feature::StreamableShell);
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &review_model_family,
-        include_plan_tool: false,
-        include_apply_patch_tool: config.include_apply_patch_tool,
-        include_web_search_request: false,
-        use_streamable_shell_tool: false,
-        include_view_image_tool: false,
-        experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+        include_plan_tool: review_features.enabled(Feature::PlanTool),
+        include_apply_patch_tool: review_features.enabled(Feature::ApplyPatchFreeform),
+        include_web_search_request: review_features.enabled(Feature::WebSearchRequest),
+        use_streamable_shell_tool: review_features.enabled(Feature::StreamableShell),
+        include_view_image_tool: review_features.enabled(Feature::ViewImageTool),
+        experimental_unified_exec_tool: review_features.enabled(Feature::UnifiedExec),
     });
 
     let base_instructions = REVIEW_PROMPT.to_string();
@@ -1628,7 +1639,7 @@ pub(crate) async fn spawn_review_thread(
 
     // Seed the child task with the review prompt as the initial user message.
     let input: Vec<InputItem> = vec![InputItem::Text {
-        text: format!("{base_instructions}\n\n---\n\nNow, here's your task: {review_prompt}"),
+        text: review_prompt.clone(),
     }];
     let tc = Arc::new(review_turn_context);
 
@@ -2902,14 +2913,15 @@ mod tests {
             config.model_reasoning_summary,
             conversation_id,
         );
+        let features = &config.features;
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &config.model_family,
-            include_plan_tool: config.include_plan_tool,
-            include_apply_patch_tool: config.include_apply_patch_tool,
-            include_web_search_request: config.tools_web_search_request,
-            use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-            include_view_image_tool: config.include_view_image_tool,
-            experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+            include_plan_tool: features.enabled(Feature::PlanTool),
+            include_apply_patch_tool: features.enabled(Feature::ApplyPatchFreeform),
+            include_web_search_request: features.enabled(Feature::WebSearchRequest),
+            use_streamable_shell_tool: features.enabled(Feature::StreamableShell),
+            include_view_image_tool: features.enabled(Feature::ViewImageTool),
+            experimental_unified_exec_tool: features.enabled(Feature::UnifiedExec),
         });
         let turn_context = TurnContext {
             client,
@@ -2975,14 +2987,15 @@ mod tests {
             config.model_reasoning_summary,
             conversation_id,
         );
+        let features = &config.features;
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &config.model_family,
-            include_plan_tool: config.include_plan_tool,
-            include_apply_patch_tool: config.include_apply_patch_tool,
-            include_web_search_request: config.tools_web_search_request,
-            use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-            include_view_image_tool: config.include_view_image_tool,
-            experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
+            include_plan_tool: features.enabled(Feature::PlanTool),
+            include_apply_patch_tool: features.enabled(Feature::ApplyPatchFreeform),
+            include_web_search_request: features.enabled(Feature::WebSearchRequest),
+            use_streamable_shell_tool: features.enabled(Feature::StreamableShell),
+            include_view_image_tool: features.enabled(Feature::ViewImageTool),
+            experimental_unified_exec_tool: features.enabled(Feature::UnifiedExec),
         });
         let turn_context = Arc::new(TurnContext {
             client,

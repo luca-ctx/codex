@@ -59,7 +59,6 @@ async fn collect_tool_identifiers_for_model(model: &str) -> Vec<String> {
         find_family_for_model(model).unwrap_or_else(|| panic!("unknown model family for {model}"));
     config.features.disable(Feature::PlanTool);
     config.features.disable(Feature::ApplyPatchFreeform);
-    config.features.disable(Feature::ViewImageTool);
     config.features.disable(Feature::WebSearchRequest);
     config.features.disable(Feature::StreamableShell);
     config.features.disable(Feature::UnifiedExec);
@@ -99,6 +98,7 @@ async fn model_selects_expected_tools() {
             "permanently_terminate_session".to_string(),
             "request_code_review".to_string(),
             "delegate_to_worker".to_string(),
+            "view_image".to_string(),
         ],
         "codex-mini-latest should expose the local shell tool",
     );
@@ -111,6 +111,7 @@ async fn model_selects_expected_tools() {
             "permanently_terminate_session".to_string(),
             "request_code_review".to_string(),
             "delegate_to_worker".to_string(),
+            "view_image".to_string(),
         ],
         "o3 should expose the generic shell tool",
     );
@@ -124,6 +125,7 @@ async fn model_selects_expected_tools() {
             "request_code_review".to_string(),
             "delegate_to_worker".to_string(),
             "apply_patch".to_string(),
+            "view_image".to_string(),
         ],
         "gpt-5-codex should expose the apply_patch tool",
     );

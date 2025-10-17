@@ -358,6 +358,55 @@ fn create_read_file_tool() -> ToolSpec {
         },
     })
 }
+
+fn create_grep_files_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "pattern".to_string(),
+        JsonSchema::String {
+            description: Some("Regular expression to search for.".to_string()),
+        },
+    );
+    properties.insert(
+        "include".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional glob that restricts which files are searched (for example `*.rs`)."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "path".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional path to search. Defaults to the current working directory.".to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "limit".to_string(),
+        JsonSchema::Number {
+            description: Some(
+                "Maximum number of matching files to return (defaults to 100, capped at 2000)."
+                    .to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "grep_files".to_string(),
+        description:
+            "Searches files for a regex pattern using ripgrep and returns the matching paths."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["pattern".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
 /// TODO(dylan): deprecate once we get rid of json tool
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ApplyPatchToolArgs {
@@ -568,6 +617,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::DelegateWorkerHandler;
     use crate::tools::handlers::ExecStreamHandler;
+    use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
@@ -690,6 +740,16 @@ pub(crate) fn build_specs(
         let read_file_handler = Arc::new(ReadFileHandler);
         builder.push_spec_with_parallel_support(create_read_file_tool(), true);
         builder.register_handler("read_file", read_file_handler);
+    }
+
+    if config
+        .experimental_supported_tools
+        .iter()
+        .any(|tool| tool == "grep_files")
+    {
+        let grep_files_handler = Arc::new(GrepFilesHandler);
+        builder.push_spec_with_parallel_support(create_grep_files_tool(), true);
+        builder.register_handler("grep_files", grep_files_handler);
     }
 
     if config
