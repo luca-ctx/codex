@@ -17,6 +17,10 @@ At a glance:
   - `sendUserMessage` / `sendUserTurn` → send user input into a conversation
   - `interruptConversation` → stop the current turn
   - `listConversations`, `resumeConversation`, `archiveConversation`
+- Tools
+  - `codex` — launch a new Codex session (accepts prompt/config overrides)
+  - `codex-reply` — continue an existing Codex session by conversation id
+  - `codex-code-review` — trigger the review workflow for an existing session (requires the session id and custom review instructions)
 - Configuration and info
   - `getUserSavedConfig`, `setDefaultModel`, `getUserAgent`, `userInfo`
 - Auth

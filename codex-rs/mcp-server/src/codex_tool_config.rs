@@ -129,6 +129,51 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexCodeReviewParam {
+    /// Conversation id of the parent Codex session where the review should run.
+    pub conversation_id: String,
+
+    /// Custom instructions describing what Codex should review.
+    pub instructions: String,
+
+    /// Optional hint presented to the user interface when entering review mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_facing_hint: Option<String>,
+}
+
+pub(crate) fn create_tool_for_codex_code_review_param() -> Tool {
+    let schema = SchemaSettings::draft2019_09()
+        .with(|s| {
+            s.inline_subschemas = true;
+            s.option_add_null_type = false;
+        })
+        .into_generator()
+        .into_root_schema_for::<CodexCodeReviewParam>();
+
+    #[expect(clippy::expect_used)]
+    let schema_value =
+        serde_json::to_value(&schema).expect("Codex code review tool schema should serialise");
+
+    let tool_input_schema =
+        serde_json::from_value::<ToolInputSchema>(schema_value).unwrap_or_else(|e| {
+            panic!("failed to create Tool from schema: {e}");
+        });
+
+    Tool {
+        name: "codex-code-review".to_string(),
+        title: Some("Codex Code Review".to_string()),
+        input_schema: tool_input_schema,
+        output_schema: None,
+        description: Some(
+            "Request a code review for an existing Codex session. Provide the conversation id and custom instructions."
+                .to_string(),
+        ),
+        annotations: None,
+    }
+}
+
 impl CodexToolCallParam {
     /// Returns the initial user prompt to start the Codex conversation and the
     /// effective Config object generated from the supplied parameters.

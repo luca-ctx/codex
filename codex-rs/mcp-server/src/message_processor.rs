@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::codex_tool_config::CodexCodeReviewParam;
 use crate::codex_tool_config::CodexToolCallParam;
 use crate::codex_tool_config::CodexToolCallReplyParam;
+use crate::codex_tool_config::create_tool_for_codex_code_review_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
@@ -15,6 +17,8 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
+use codex_core::protocol::Op;
+use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::Submission;
 use mcp_types::CallToolRequestParams;
 use mcp_types::CallToolResult;
@@ -42,6 +46,13 @@ pub(crate) struct MessageProcessor {
     codex_linux_sandbox_exe: Option<PathBuf>,
     conversation_manager: Arc<ConversationManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
+}
+
+fn request_id_to_string(id: &RequestId) -> String {
+    match id {
+        RequestId::String(s) => s.clone(),
+        RequestId::Integer(n) => n.to_string(),
+    }
 }
 
 impl MessageProcessor {
@@ -301,6 +312,7 @@ impl MessageProcessor {
         let result = ListToolsResult {
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
+                create_tool_for_codex_code_review_param(),
                 create_tool_for_codex_tool_call_reply_param(),
             ],
             next_cursor: None,
@@ -320,6 +332,7 @@ impl MessageProcessor {
 
         match name.as_str() {
             "codex" => self.handle_tool_call_codex(id, arguments).await,
+            "codex-code-review" => self.handle_tool_call_codex_code_review(id, arguments).await,
             "codex-reply" => {
                 self.handle_tool_call_codex_session_reply(id, arguments)
                     .await
@@ -529,6 +542,159 @@ impl MessageProcessor {
                 .await;
             }
         });
+    }
+
+    async fn handle_tool_call_codex_code_review(
+        &self,
+        request_id: RequestId,
+        arguments: Option<serde_json::Value>,
+    ) {
+        tracing::info!("tools/call codex-code-review -> params: {:?}", arguments);
+
+        let params = match arguments {
+            Some(json_val) => match serde_json::from_value::<CodexCodeReviewParam>(json_val) {
+                Ok(params) => params,
+                Err(e) => {
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_owned(),
+                            text: format!(
+                                "Failed to parse configuration for Codex code review tool: {e}"
+                            ),
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                        .await;
+                    return;
+                }
+            },
+            None => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_owned(),
+                        text: "Missing arguments for codex-code-review tool-call; the `conversation_id` field is required.".to_owned(),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                    .await;
+                return;
+            }
+        };
+
+        let CodexCodeReviewParam {
+            conversation_id,
+            instructions,
+            user_facing_hint,
+        } = params;
+
+        let conversation_id = match ConversationId::from_string(&conversation_id) {
+            Ok(id) => id,
+            Err(e) => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_owned(),
+                        text: format!("Failed to parse conversation_id: {e}"),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                    .await;
+                return;
+            }
+        };
+
+        let conversation = match self
+            .conversation_manager
+            .get_conversation(conversation_id)
+            .await
+        {
+            Ok(conv) => conv,
+            Err(_) => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_owned(),
+                        text: format!("Session not found for conversation_id: {conversation_id}"),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                    .await;
+                return;
+            }
+        };
+
+        let trimmed_instructions = instructions.trim();
+        if trimmed_instructions.is_empty() {
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_owned(),
+                    text: "Missing instructions for codex-code-review tool-call; provide non-empty custom instructions.".to_owned(),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                .await;
+            return;
+        }
+
+        let prompt_text = trimmed_instructions.to_string();
+
+        let review_request = ReviewRequest {
+            prompt: prompt_text,
+            user_facing_hint: user_facing_hint.unwrap_or_else(|| "MCP code review".to_string()),
+        };
+
+        let sub_id = request_id_to_string(&request_id);
+
+        self.running_requests_id_to_codex_uuid
+            .lock()
+            .await
+            .insert(request_id.clone(), conversation_id);
+
+        let submission = Submission {
+            id: sub_id,
+            op: Op::Review { review_request },
+        };
+
+        if let Err(e) = conversation.submit_with_id(submission).await {
+            tracing::error!("Failed to submit code review request: {e}");
+            self.running_requests_id_to_codex_uuid
+                .lock()
+                .await
+                .remove(&request_id);
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_owned(),
+                    text: format!("Failed to submit code review request: {e}"),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            self.send_response::<mcp_types::CallToolRequest>(request_id, result)
+                .await;
+            return;
+        }
+
+        crate::codex_tool_runner::run_codex_tool_session_inner(
+            conversation,
+            self.outgoing.clone(),
+            request_id,
+            self.running_requests_id_to_codex_uuid.clone(),
+        )
+        .await;
     }
 
     fn handle_set_level(

@@ -7,6 +7,7 @@ use codex_core::parse_command;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::ReviewDecision;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_mcp_server::CodexCodeReviewParam;
 use codex_mcp_server::CodexToolCallParam;
 use codex_mcp_server::ExecApprovalElicitRequestParams;
 use codex_mcp_server::ExecApprovalResponse;
@@ -15,11 +16,13 @@ use codex_mcp_server::PatchApprovalResponse;
 use mcp_types::ElicitRequest;
 use mcp_types::ElicitRequestParamsRequestedSchema;
 use mcp_types::JSONRPC_VERSION;
+use mcp_types::JSONRPCMessage;
 use mcp_types::JSONRPCRequest;
 use mcp_types::JSONRPCResponse;
 use mcp_types::ModelContextProtocolRequest;
 use mcp_types::RequestId;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -161,6 +164,243 @@ async fn shell_command_approval_triggers_elicitation() -> anyhow::Result<()> {
     );
 
     assert!(created_file.is_file(), "created file should exist");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_code_review_command_requires_custom_instructions() {
+    if env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        println!(
+            "Skipping test because it cannot execute when network is disabled in a Codex sandbox."
+        );
+        return;
+    }
+
+    if let Err(err) = code_review_command_requires_custom_instructions().await {
+        panic!("failure: {err}");
+    }
+}
+
+async fn code_review_command_requires_custom_instructions() -> anyhow::Result<()> {
+    let responses = vec![
+        create_final_assistant_message_sse_response("Initial response!")?,
+        create_final_assistant_message_sse_response("Review complete!")?,
+    ];
+
+    let McpHandle {
+        process: mut mcp_process,
+        server: _server,
+        dir: _dir,
+    } = create_mcp_process(responses).await?;
+
+    let codex_request_id = mcp_process
+        .send_codex_tool_call(CodexToolCallParam {
+            prompt: "Start session".to_string(),
+            ..Default::default()
+        })
+        .await?;
+
+    let mut conversation_id: Option<String> = None;
+    let mut codex_response: Option<JSONRPCResponse> = None;
+
+    while conversation_id.is_none() || codex_response.is_none() {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp_process.read_message()).await??;
+        match message {
+            JSONRPCMessage::Notification(notification) => {
+                if notification.method == "codex/event"
+                    && let Some(params) = notification.params
+                    && let Some(msg) = params.get("msg")
+                    && msg.get("type").and_then(Value::as_str) == Some("session_configured")
+                    && let Some(id) = msg.get("session_id").and_then(Value::as_str)
+                {
+                    conversation_id = Some(id.to_string());
+                }
+            }
+            JSONRPCMessage::Response(response) => {
+                if response.id == RequestId::Integer(codex_request_id) {
+                    codex_response = Some(response);
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Error(_) => {}
+        }
+    }
+
+    codex_response.ok_or_else(|| anyhow::anyhow!("codex tool call should complete"))?;
+    let conversation_id =
+        conversation_id.ok_or_else(|| anyhow::anyhow!("expected session_configured event"))?;
+
+    let instructions = "Review the current changes for concurrency bugs.";
+    let review_request_id = mcp_process
+        .send_codex_code_review_tool_call(CodexCodeReviewParam {
+            conversation_id: conversation_id.clone(),
+            instructions: instructions.to_string(),
+            user_facing_hint: None,
+        })
+        .await?;
+
+    let mut saw_entered_review = false;
+    let mut review_response: Option<JSONRPCResponse> = None;
+
+    while !saw_entered_review || review_response.is_none() {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp_process.read_message()).await??;
+        match message {
+            JSONRPCMessage::Notification(notification) => {
+                if notification.method == "codex/event"
+                    && let Some(params) = notification.params
+                    && let Some(msg) = params.get("msg")
+                    && msg.get("type").and_then(Value::as_str) == Some("entered_review_mode")
+                    && let Some(prompt) = msg.get("prompt").and_then(Value::as_str)
+                {
+                    assert_eq!(prompt, instructions);
+                    saw_entered_review = true;
+                }
+            }
+            JSONRPCMessage::Response(response) => {
+                if response.id == RequestId::Integer(review_request_id) {
+                    review_response = Some(response);
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Error(_) => {}
+        }
+    }
+
+    let review_response =
+        review_response.ok_or_else(|| anyhow::anyhow!("expected review response"))?;
+    let result_text = review_response
+        .result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(result_text, "Review complete!");
+    assert!(saw_entered_review, "expected entered_review_mode event");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_code_review_command_rejects_blank_instructions() {
+    if env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        println!(
+            "Skipping test because it cannot execute when network is disabled in a Codex sandbox."
+        );
+        return;
+    }
+
+    if let Err(err) = code_review_command_rejects_blank_instructions().await {
+        panic!("failure: {err}");
+    }
+}
+
+async fn code_review_command_rejects_blank_instructions() -> anyhow::Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response(
+        "Initial response!",
+    )?];
+
+    let McpHandle {
+        process: mut mcp_process,
+        server: _server,
+        dir: _dir,
+    } = create_mcp_process(responses).await?;
+
+    let codex_request_id = mcp_process
+        .send_codex_tool_call(CodexToolCallParam {
+            prompt: "Start session".to_string(),
+            ..Default::default()
+        })
+        .await?;
+
+    let mut conversation_id: Option<String> = None;
+    let mut codex_response: Option<JSONRPCResponse> = None;
+
+    while conversation_id.is_none() || codex_response.is_none() {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp_process.read_message()).await??;
+        match message {
+            JSONRPCMessage::Notification(notification) => {
+                if notification.method == "codex/event"
+                    && let Some(params) = notification.params
+                    && let Some(msg) = params.get("msg")
+                {
+                    if msg.get("type").and_then(Value::as_str) == Some("session_configured")
+                        && let Some(id) = msg.get("session_id").and_then(Value::as_str)
+                    {
+                        conversation_id = Some(id.to_string());
+                    }
+                    if msg.get("type").and_then(Value::as_str) == Some("entered_review_mode") {
+                        anyhow::bail!(
+                            "unexpected entered_review_mode event for blank instructions"
+                        );
+                    }
+                }
+            }
+            JSONRPCMessage::Response(response) => {
+                if response.id == RequestId::Integer(codex_request_id) {
+                    codex_response = Some(response);
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Error(_) => {}
+        }
+    }
+
+    codex_response.ok_or_else(|| anyhow::anyhow!("codex tool call should complete"))?;
+    let conversation_id =
+        conversation_id.ok_or_else(|| anyhow::anyhow!("expected session_configured event"))?;
+
+    let review_request_id = mcp_process
+        .send_codex_code_review_tool_call(CodexCodeReviewParam {
+            conversation_id,
+            instructions: "   ".to_string(),
+            user_facing_hint: None,
+        })
+        .await?;
+
+    let mut review_response: Option<JSONRPCResponse> = None;
+
+    while review_response.is_none() {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp_process.read_message()).await??;
+        match message {
+            JSONRPCMessage::Notification(notification) => {
+                if notification.method == "codex/event"
+                    && let Some(params) = notification.params
+                    && let Some(msg) = params.get("msg")
+                    && msg.get("type").and_then(Value::as_str) == Some("entered_review_mode")
+                {
+                    anyhow::bail!("unexpected entered_review_mode event for blank instructions");
+                }
+            }
+            JSONRPCMessage::Response(response) => {
+                if response.id == RequestId::Integer(review_request_id) {
+                    review_response = Some(response);
+                }
+            }
+            JSONRPCMessage::Request(_) | JSONRPCMessage::Error(_) => {}
+        }
+    }
+
+    let review_response =
+        review_response.ok_or_else(|| anyhow::anyhow!("expected review response"))?;
+    let is_error = review_response
+        .result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    assert!(is_error, "expected error response for blank instructions");
+
+    let message_text = review_response
+        .result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message_text.contains("Missing instructions"),
+        "expected validation message, got: {message_text}"
+    );
 
     Ok(())
 }

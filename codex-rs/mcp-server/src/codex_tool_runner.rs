@@ -149,7 +149,7 @@ pub async fn run_codex_tool_session_reply(
     .await;
 }
 
-async fn run_codex_tool_session_inner(
+pub(crate) async fn run_codex_tool_session_inner(
     codex: Arc<CodexConversation>,
     outgoing: Arc<OutgoingMessageSender>,
     request_id: RequestId,

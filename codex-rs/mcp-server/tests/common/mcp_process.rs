@@ -11,6 +11,7 @@ use tokio::process::ChildStdout;
 
 use anyhow::Context;
 use assert_cmd::prelude::*;
+use codex_mcp_server::CodexCodeReviewParam;
 use codex_mcp_server::CodexToolCallParam;
 
 use mcp_types::CallToolRequestParams;
@@ -200,6 +201,21 @@ impl McpProcess {
         .await
     }
 
+    pub async fn send_codex_code_review_tool_call(
+        &mut self,
+        params: CodexCodeReviewParam,
+    ) -> anyhow::Result<i64> {
+        let review_params = CallToolRequestParams {
+            name: "codex-code-review".to_string(),
+            arguments: Some(serde_json::to_value(params)?),
+        };
+        self.send_request(
+            mcp_types::CallToolRequest::METHOD,
+            Some(serde_json::to_value(review_params)?),
+        )
+        .await
+    }
+
     async fn send_request(
         &mut self,
         method: &str,
@@ -245,6 +261,10 @@ impl McpProcess {
         let message = serde_json::from_str::<JSONRPCMessage>(&line)?;
         eprintln!("read message from stdout: {message:?}");
         Ok(message)
+    }
+
+    pub async fn read_message(&mut self) -> anyhow::Result<JSONRPCMessage> {
+        self.read_jsonrpc_message().await
     }
 
     pub async fn read_stream_until_request_message(&mut self) -> anyhow::Result<JSONRPCRequest> {
