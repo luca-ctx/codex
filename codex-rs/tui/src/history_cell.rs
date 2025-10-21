@@ -667,9 +667,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
             .len()
             .max(MODEL_LABEL.len())
             .max(SESSION_LABEL.len());
-        let model_label = format!(
-            "{MODEL_LABEL:<label_width$}"
-        );
+        let model_label = format!("{MODEL_LABEL:<label_width$}");
         let reasoning_label = self.reasoning_label();
         let mut model_spans: Vec<Span<'static>> = vec![
             Span::from(format!("{model_label} ")).dim(),
@@ -690,9 +688,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
         ];
 
         if let Some(name) = &self.session_name {
-            let session_label = format!(
-                "{SESSION_LABEL:<label_width$}"
-            );
+            let session_label = format!("{SESSION_LABEL:<label_width$}");
             let session_spans = vec![
                 Span::from(format!("{session_label} ")).dim(),
                 Span::from(name.clone()),

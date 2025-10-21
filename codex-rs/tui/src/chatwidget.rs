@@ -1372,11 +1372,13 @@ impl ChatWidget {
             return;
         }
 
-        if image_paths.is_empty() && !text.is_empty()
+        if image_paths.is_empty()
+            && !text.is_empty()
             && let Some(arg) = Self::extract_rename_command_input(&text)
-                && self.handle_rename_command(arg) {
-                    return;
-                }
+            && self.handle_rename_command(arg)
+        {
+            return;
+        }
 
         self.capture_ghost_snapshot();
 

@@ -348,6 +348,7 @@ async fn run_ratatui_app(
                         token_usage: codex_core::protocol::TokenUsage::default(),
                         conversation_id: None,
                         update_action: Some(action),
+                        session_name: None,
                     });
                 }
             }

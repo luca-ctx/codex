@@ -602,9 +602,10 @@ impl Session {
             guard.as_ref().cloned()
         };
         if let Some(recorder) = recorder
-            && let Err(err) = recorder.record_session_name(&session_name).await {
-                warn!("failed to record session rename: {err}");
-            }
+            && let Err(err) = recorder.record_session_name(&session_name).await
+        {
+            warn!("failed to record session rename: {err}");
+        }
 
         let event = Event {
             id: INITIAL_SUBMIT_ID.to_owned(),
@@ -3028,7 +3029,7 @@ mod tests {
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
             services,
-             session_name: Mutex::new(None),
+            session_name: Mutex::new(None),
             next_internal_sub_id: AtomicU64::new(0),
         };
         (session, turn_context)
