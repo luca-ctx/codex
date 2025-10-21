@@ -7,6 +7,14 @@ use crate::codex_tool_config::CodexToolCallReplyParam;
 use crate::codex_tool_config::create_tool_for_codex_code_review_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
+use crate::codex_tool_runner::RequestConversationEntry;
+use crate::codex_tool_runner::RequestConversationsMap;
+use crate::codex_tool_runner::ToolCallCompletion;
+use crate::codex_tool_runner::add_request_conversation;
+use crate::codex_tool_runner::clone_request_conversations;
+use crate::codex_tool_runner::remove_request_conversation;
+use crate::codex_tool_runner::request_id_to_string;
+use crate::codex_tool_runner::run_codex_batch_sessions;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_protocol::ConversationId;
@@ -45,14 +53,7 @@ pub(crate) struct MessageProcessor {
     initialized: bool,
     codex_linux_sandbox_exe: Option<PathBuf>,
     conversation_manager: Arc<ConversationManager>,
-    running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
-}
-
-fn request_id_to_string(id: &RequestId) -> String {
-    match id {
-        RequestId::String(s) => s.clone(),
-        RequestId::Integer(n) => n.to_string(),
-    }
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
 }
 
 impl MessageProcessor {
@@ -312,6 +313,7 @@ impl MessageProcessor {
         let result = ListToolsResult {
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
+                crate::codex_tool_config::create_tool_for_codex_batch_tool_call_param(),
                 create_tool_for_codex_code_review_param(),
                 create_tool_for_codex_tool_call_reply_param(),
             ],
@@ -332,6 +334,7 @@ impl MessageProcessor {
 
         match name.as_str() {
             "codex" => self.handle_tool_call_codex(id, arguments).await,
+            "codex-batch" => self.handle_tool_call_codex_batch(id, arguments).await,
             "codex-code-review" => self.handle_tool_call_codex_code_review(id, arguments).await,
             "codex-reply" => {
                 self.handle_tool_call_codex_session_reply(id, arguments)
@@ -428,6 +431,223 @@ impl MessageProcessor {
                 running_requests_id_to_codex_uuid,
             )
             .await;
+        });
+    }
+
+    async fn handle_tool_call_codex_batch(
+        &self,
+        id: RequestId,
+        arguments: Option<serde_json::Value>,
+    ) {
+        tracing::info!("tools/call codex-batch -> params: {:?}", arguments);
+
+        let params = match arguments {
+            Some(json_val) => match serde_json::from_value::<
+                crate::codex_tool_config::CodexBatchToolCallParam,
+            >(json_val)
+            {
+                Ok(params) => params,
+                Err(e) => {
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_owned(),
+                            text: format!(
+                                "Failed to parse configuration for Codex batch tool: {e}"
+                            ),
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(id, result)
+                        .await;
+                    return;
+                }
+            },
+            None => {
+                let result = CallToolResult {
+                    content: vec![ContentBlock::TextContent(TextContent {
+                        r#type: "text".to_owned(),
+                        text: "Missing arguments for codex-batch tool-call; the `sessions` field is required.".to_owned(),
+                        annotations: None,
+                    })],
+                    is_error: Some(true),
+                    structured_content: None,
+                };
+                self.send_response::<mcp_types::CallToolRequest>(id, result)
+                    .await;
+                return;
+            }
+        };
+
+        if params.sessions.is_empty() {
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_owned(),
+                    text: "codex-batch requires at least one session".to_owned(),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            self.send_response::<mcp_types::CallToolRequest>(id, result)
+                .await;
+            return;
+        }
+
+        let mut session_configs = Vec::with_capacity(params.sessions.len());
+
+        for (index, session) in params.sessions.into_iter().enumerate() {
+            match session
+                .into_batch_config(self.codex_linux_sandbox_exe.clone(), index)
+                .await
+            {
+                Ok(cfg) => session_configs.push(cfg),
+                Err(e) => {
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_owned(),
+                            text: format!(
+                                "Failed to load Codex configuration for batch session {index}: {e}"
+                            ),
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(id, result)
+                        .await;
+                    return;
+                }
+            }
+        }
+
+        let outgoing = self.outgoing.clone();
+        let conversation_manager = self.conversation_manager.clone();
+        let running_requests_id_to_codex_uuid = self.running_requests_id_to_codex_uuid.clone();
+
+        task::spawn(async move {
+            let results = run_codex_batch_sessions(
+                id.clone(),
+                outgoing.clone(),
+                conversation_manager,
+                running_requests_id_to_codex_uuid,
+                session_configs,
+            )
+            .await;
+
+            let mut summary_lines = Vec::new();
+            let mut structured_sessions = Vec::new();
+            let mut completed = 0_usize;
+            let mut errors = 0_usize;
+            let mut terminated = 0_usize;
+
+            for result in results {
+                let crate::codex_tool_runner::BatchSessionResult {
+                    index,
+                    label,
+                    conversation_id,
+                    completion,
+                } = result;
+
+                let conversation_id_str = conversation_id.map(|cid| cid.to_string());
+
+                let (structured_value, status, message_text) = match completion {
+                    ToolCallCompletion::Call(call_result) => {
+                        let extracted = call_result
+                            .content
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::TextContent(text) => Some(text.text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let structured = serde_json::to_value(&call_result).unwrap_or_else(|serialize_err| {
+                        json!({"serialization_error": serialize_err.to_string()})
+                    });
+                        if call_result.is_error.unwrap_or(false) {
+                            errors += 1;
+                            (
+                                structured,
+                                "error",
+                                if extracted.is_empty() {
+                                    None
+                                } else {
+                                    Some(extracted)
+                                },
+                            )
+                        } else {
+                            completed += 1;
+                            (
+                                structured,
+                                "completed",
+                                if extracted.is_empty() {
+                                    None
+                                } else {
+                                    Some(extracted)
+                                },
+                            )
+                        }
+                    }
+                    ToolCallCompletion::Raw(value) => {
+                        terminated += 1;
+                        (value, "terminated", None)
+                    }
+                };
+
+                structured_sessions.push(json!({
+                    "index": index,
+                    "label": label.clone(),
+                    "conversation_id": conversation_id_str.clone(),
+                    "status": status,
+                    "result": structured_value,
+                }));
+
+                let display_label = label.clone().unwrap_or_else(|| format!("session {index}"));
+                let mut line = format!("[{status}] {display_label} (index: {index})");
+                if let Some(cid) = conversation_id_str.as_deref()
+                    && !cid.is_empty()
+                {
+                    line.push_str(&format!(", conversation: {cid}"));
+                }
+                summary_lines.push(line);
+                if let Some(text) = message_text {
+                    let preview = text.lines().next().unwrap_or("").trim();
+                    if !preview.is_empty() {
+                        summary_lines.push(format!("    {preview}"));
+                    }
+                }
+            }
+
+            let total = completed + errors + terminated;
+            let summary_header = format!(
+                "Batch finished: {completed} completed, {errors} error, {terminated} terminated (total {total})."
+            );
+            summary_lines.insert(0, summary_header);
+            let summary_text = summary_lines.join("\n");
+
+            let structured_content = Some(json!({
+                "sessions": structured_sessions
+            }));
+
+            let overall_error = if completed == 0 && errors > 0 && terminated == 0 {
+                Some(true)
+            } else {
+                None
+            };
+
+            let final_result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_owned(),
+                    text: summary_text,
+                    annotations: None,
+                })],
+                is_error: overall_error,
+                structured_content,
+            };
+
+            outgoing.send_response(id, final_result).await;
         });
     }
 
@@ -658,22 +878,26 @@ impl MessageProcessor {
 
         let sub_id = request_id_to_string(&request_id);
 
-        self.running_requests_id_to_codex_uuid
-            .lock()
-            .await
-            .insert(request_id.clone(), conversation_id);
+        add_request_conversation(
+            &self.running_requests_id_to_codex_uuid,
+            &request_id,
+            RequestConversationEntry::new(conversation_id, sub_id.clone()),
+        )
+        .await;
 
         let submission = Submission {
-            id: sub_id,
+            id: sub_id.clone(),
             op: Op::Review { review_request },
         };
 
         if let Err(e) = conversation.submit_with_id(submission).await {
             tracing::error!("Failed to submit code review request: {e}");
-            self.running_requests_id_to_codex_uuid
-                .lock()
-                .await
-                .remove(&request_id);
+            remove_request_conversation(
+                &self.running_requests_id_to_codex_uuid,
+                &request_id,
+                conversation_id,
+            )
+            .await;
             let result = CallToolResult {
                 content: vec![ContentBlock::TextContent(TextContent {
                     r#type: "text".to_owned(),
@@ -688,13 +912,24 @@ impl MessageProcessor {
             return;
         }
 
-        crate::codex_tool_runner::run_codex_tool_session_inner(
+        let completion = crate::codex_tool_runner::run_codex_tool_session_inner(
             conversation,
             self.outgoing.clone(),
-            request_id,
+            request_id.clone(),
             self.running_requests_id_to_codex_uuid.clone(),
+            conversation_id,
+            sub_id,
         )
         .await;
+
+        match completion {
+            ToolCallCompletion::Call(result) => {
+                self.outgoing.send_response(request_id, result).await;
+            }
+            ToolCallCompletion::Raw(value) => {
+                self.outgoing.send_response(request_id, value).await;
+            }
+        }
     }
 
     fn handle_set_level(
@@ -720,54 +955,56 @@ impl MessageProcessor {
         params: <mcp_types::CancelledNotification as mcp_types::ModelContextProtocolNotification>::Params,
     ) {
         let request_id = params.request_id;
-        // Create a stable string form early for logging and submission id.
-        let request_id_string = match &request_id {
-            RequestId::String(s) => s.clone(),
-            RequestId::Integer(i) => i.to_string(),
-        };
-
-        // Obtain the conversation id while holding the first lock, then release.
-        let conversation_id = {
-            let map_guard = self.running_requests_id_to_codex_uuid.lock().await;
-            match map_guard.get(&request_id) {
-                Some(id) => *id,
-                None => {
-                    tracing::warn!("Session not found for request_id: {}", request_id_string);
-                    return;
-                }
-            }
-        };
-        tracing::info!("conversation_id: {conversation_id}");
-
-        // Obtain the Codex conversation from the server.
-        let codex_arc = match self
-            .conversation_manager
-            .get_conversation(conversation_id)
-            .await
-        {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("Session not found for conversation_id: {conversation_id}");
-                return;
-            }
-        };
-
-        // Submit interrupt to Codex.
-        let err = codex_arc
-            .submit_with_id(Submission {
-                id: request_id_string,
-                op: codex_core::protocol::Op::Interrupt,
-            })
-            .await;
-        if let Err(e) = err {
-            tracing::error!("Failed to submit interrupt to Codex: {e}");
+        let Some(entries) =
+            clone_request_conversations(&self.running_requests_id_to_codex_uuid, &request_id).await
+        else {
+            tracing::warn!(
+                "Session not found for request_id: {}",
+                request_id_to_string(&request_id)
+            );
             return;
+        };
+
+        for entry in entries {
+            tracing::info!("conversation_id: {}", entry.conversation_id);
+            let codex_arc = match self
+                .conversation_manager
+                .get_conversation(entry.conversation_id)
+                .await
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    tracing::warn!(
+                        "Session not found for conversation_id: {}",
+                        entry.conversation_id
+                    );
+                    remove_request_conversation(
+                        &self.running_requests_id_to_codex_uuid,
+                        &request_id,
+                        entry.conversation_id,
+                    )
+                    .await;
+                    continue;
+                }
+            };
+
+            if let Err(e) = codex_arc
+                .submit_with_id(Submission {
+                    id: entry.sub_id.clone(),
+                    op: codex_core::protocol::Op::Interrupt,
+                })
+                .await
+            {
+                tracing::error!("Failed to submit interrupt to Codex: {e}");
+            }
+
+            remove_request_conversation(
+                &self.running_requests_id_to_codex_uuid,
+                &request_id,
+                entry.conversation_id,
+            )
+            .await;
         }
-        // unregister the id so we don't keep it in the map
-        self.running_requests_id_to_codex_uuid
-            .lock()
-            .await
-            .remove(&request_id);
     }
 
     fn handle_progress_notification(

@@ -29,8 +29,63 @@ use mcp_types::RequestId;
 use mcp_types::TextContent;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 pub(crate) const INVALID_PARAMS_ERROR_CODE: i64 = -32602;
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestConversationEntry {
+    pub conversation_id: ConversationId,
+    pub sub_id: String,
+}
+
+impl RequestConversationEntry {
+    pub fn new(conversation_id: ConversationId, sub_id: String) -> Self {
+        Self {
+            conversation_id,
+            sub_id,
+        }
+    }
+}
+
+pub(crate) type RequestConversationsMap = HashMap<RequestId, Vec<RequestConversationEntry>>;
+
+pub(crate) async fn add_request_conversation(
+    map: &Arc<Mutex<RequestConversationsMap>>,
+    request_id: &RequestId,
+    entry: RequestConversationEntry,
+) {
+    let mut guard = map.lock().await;
+    guard.entry(request_id.clone()).or_default().push(entry);
+}
+
+pub(crate) async fn remove_request_conversation(
+    map: &Arc<Mutex<RequestConversationsMap>>,
+    request_id: &RequestId,
+    conversation_id: ConversationId,
+) {
+    let mut guard = map.lock().await;
+    if let Some(entries) = guard.get_mut(request_id) {
+        entries.retain(|entry| entry.conversation_id != conversation_id);
+        if entries.is_empty() {
+            guard.remove(request_id);
+        }
+    }
+}
+
+pub(crate) async fn clone_request_conversations(
+    map: &Arc<Mutex<RequestConversationsMap>>,
+    request_id: &RequestId,
+) -> Option<Vec<RequestConversationEntry>> {
+    let guard = map.lock().await;
+    guard.get(request_id).cloned()
+}
+
+#[derive(Debug)]
+pub(crate) enum ToolCallCompletion {
+    Call(CallToolResult),
+    Raw(serde_json::Value),
+}
 
 /// Run a complete Codex session and stream events back to the client.
 ///
@@ -42,7 +97,7 @@ pub async fn run_codex_tool_session(
     config: CodexConfig,
     outgoing: Arc<OutgoingMessageSender>,
     conversation_manager: Arc<ConversationManager>,
-    running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
 ) {
     let NewConversation {
         conversation_id,
@@ -80,14 +135,13 @@ pub async fn run_codex_tool_session(
     // Use the original MCP request ID as the `sub_id` for the Codex submission so that
     // any events emitted for this tool-call can be correlated with the
     // originating `tools/call` request.
-    let sub_id = match &id {
-        RequestId::String(s) => s.clone(),
-        RequestId::Integer(n) => n.to_string(),
-    };
-    running_requests_id_to_codex_uuid
-        .lock()
-        .await
-        .insert(id.clone(), conversation_id);
+    let sub_id = request_id_to_string(&id);
+    add_request_conversation(
+        &running_requests_id_to_codex_uuid,
+        &id,
+        RequestConversationEntry::new(conversation_id, sub_id.clone()),
+    )
+    .await;
     let submission = Submission {
         id: sub_id.clone(),
         op: Op::UserInput {
@@ -99,18 +153,28 @@ pub async fn run_codex_tool_session(
 
     if let Err(e) = conversation.submit_with_id(submission).await {
         tracing::error!("Failed to submit initial prompt: {e}");
-        // unregister the id so we don't keep it in the map
-        running_requests_id_to_codex_uuid.lock().await.remove(&id);
+        remove_request_conversation(&running_requests_id_to_codex_uuid, &id, conversation_id).await;
         return;
     }
 
-    run_codex_tool_session_inner(
+    let completion = run_codex_tool_session_inner(
         conversation,
-        outgoing,
-        id,
+        outgoing.clone(),
+        id.clone(),
         running_requests_id_to_codex_uuid,
+        conversation_id,
+        sub_id,
     )
     .await;
+
+    match completion {
+        ToolCallCompletion::Call(result) => {
+            outgoing.send_response(id, result).await;
+        }
+        ToolCallCompletion::Raw(value) => {
+            outgoing.send_response(id, value).await;
+        }
+    }
 }
 
 pub async fn run_codex_tool_session_reply(
@@ -118,13 +182,16 @@ pub async fn run_codex_tool_session_reply(
     outgoing: Arc<OutgoingMessageSender>,
     request_id: RequestId,
     prompt: String,
-    running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
     conversation_id: ConversationId,
 ) {
-    running_requests_id_to_codex_uuid
-        .lock()
-        .await
-        .insert(request_id.clone(), conversation_id);
+    let sub_id = request_id_to_string(&request_id);
+    add_request_conversation(
+        &running_requests_id_to_codex_uuid,
+        &request_id,
+        RequestConversationEntry::new(conversation_id, sub_id.clone()),
+    )
+    .await;
     if let Err(e) = conversation
         .submit(Op::UserInput {
             items: vec![InputItem::Text { text: prompt }],
@@ -133,33 +200,43 @@ pub async fn run_codex_tool_session_reply(
     {
         tracing::error!("Failed to submit user input: {e}");
         // unregister the id so we don't keep it in the map
-        running_requests_id_to_codex_uuid
-            .lock()
-            .await
-            .remove(&request_id);
+        remove_request_conversation(
+            &running_requests_id_to_codex_uuid,
+            &request_id,
+            conversation_id,
+        )
+        .await;
         return;
     }
 
-    run_codex_tool_session_inner(
+    let completion = run_codex_tool_session_inner(
         conversation,
-        outgoing,
-        request_id,
+        outgoing.clone(),
+        request_id.clone(),
         running_requests_id_to_codex_uuid,
+        conversation_id,
+        sub_id,
     )
     .await;
+
+    match completion {
+        ToolCallCompletion::Call(result) => {
+            outgoing.send_response(request_id, result).await;
+        }
+        ToolCallCompletion::Raw(value) => {
+            outgoing.send_response(request_id, value).await;
+        }
+    }
 }
 
 pub(crate) async fn run_codex_tool_session_inner(
     codex: Arc<CodexConversation>,
     outgoing: Arc<OutgoingMessageSender>,
     request_id: RequestId,
-    running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
-) {
-    let request_id_str = match &request_id {
-        RequestId::String(s) => s.clone(),
-        RequestId::Integer(n) => n.to_string(),
-    };
-
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
+    conversation_id: ConversationId,
+    tool_call_id: String,
+) -> ToolCallCompletion {
     // Stream events until the task needs to pause for user interaction or
     // completes.
     loop {
@@ -186,7 +263,7 @@ pub(crate) async fn run_codex_tool_session_inner(
                             outgoing.clone(),
                             codex.clone(),
                             request_id.clone(),
-                            request_id_str.clone(),
+                            tool_call_id.clone(),
                             event.id.clone(),
                             call_id,
                             parsed_cmd,
@@ -199,8 +276,13 @@ pub(crate) async fn run_codex_tool_session_inner(
                         let result = json!({
                             "error": err_event.message,
                         });
-                        outgoing.send_response(request_id.clone(), result).await;
-                        break;
+                        remove_request_conversation(
+                            &running_requests_id_to_codex_uuid,
+                            &request_id,
+                            conversation_id,
+                        )
+                        .await;
+                        return ToolCallCompletion::Raw(result);
                     }
                     EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
                         call_id,
@@ -216,7 +298,7 @@ pub(crate) async fn run_codex_tool_session_inner(
                             outgoing.clone(),
                             codex.clone(),
                             request_id.clone(),
-                            request_id_str.clone(),
+                            tool_call_id.clone(),
                             event.id.clone(),
                         )
                         .await;
@@ -236,13 +318,13 @@ pub(crate) async fn run_codex_tool_session_inner(
                             is_error: None,
                             structured_content: None,
                         };
-                        outgoing.send_response(request_id.clone(), result).await;
-                        // unregister the id so we don't keep it in the map
-                        running_requests_id_to_codex_uuid
-                            .lock()
-                            .await
-                            .remove(&request_id);
-                        break;
+                        remove_request_conversation(
+                            &running_requests_id_to_codex_uuid,
+                            &request_id,
+                            conversation_id,
+                        )
+                        .await;
+                        return ToolCallCompletion::Call(result);
                     }
                     EventMsg::SessionConfigured(_) => {
                         tracing::error!("unexpected SessionConfigured event");
@@ -261,8 +343,13 @@ pub(crate) async fn run_codex_tool_session_inner(
                         let result = json!({
                             "terminated": true
                         });
-                        outgoing.send_response(request_id.clone(), result).await;
-                        break;
+                        remove_request_conversation(
+                            &running_requests_id_to_codex_uuid,
+                            &request_id,
+                            conversation_id,
+                        )
+                        .await;
+                        return ToolCallCompletion::Raw(result);
                     }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::AgentReasoningRawContentDelta(_)
@@ -315,9 +402,188 @@ pub(crate) async fn run_codex_tool_session_inner(
                     // structured way.
                     structured_content: None,
                 };
-                outgoing.send_response(request_id.clone(), result).await;
-                break;
+                remove_request_conversation(
+                    &running_requests_id_to_codex_uuid,
+                    &request_id,
+                    conversation_id,
+                )
+                .await;
+                return ToolCallCompletion::Call(result);
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchSessionConfig {
+    pub index: usize,
+    pub label: Option<String>,
+    pub prompt: String,
+    pub config: CodexConfig,
+}
+
+#[derive(Debug)]
+pub struct BatchSessionResult {
+    pub index: usize,
+    pub label: Option<String>,
+    pub conversation_id: Option<ConversationId>,
+    pub completion: ToolCallCompletion,
+}
+
+pub async fn run_codex_batch_sessions(
+    request_id: RequestId,
+    outgoing: Arc<OutgoingMessageSender>,
+    conversation_manager: Arc<ConversationManager>,
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
+    sessions: Vec<BatchSessionConfig>,
+) -> Vec<BatchSessionResult> {
+    let mut join_set = JoinSet::new();
+
+    for session in sessions {
+        let outgoing = outgoing.clone();
+        let conversation_manager = conversation_manager.clone();
+        let running_requests_id_to_codex_uuid = running_requests_id_to_codex_uuid.clone();
+        let request_id = request_id.clone();
+        join_set.spawn(run_single_batch_session(
+            request_id,
+            outgoing,
+            conversation_manager,
+            running_requests_id_to_codex_uuid,
+            session,
+        ));
+    }
+
+    let mut results = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(value) => results.push(value),
+            Err(err) => {
+                tracing::error!("batch session task failed: {err}");
+            }
+        }
+    }
+
+    results.sort_by_key(|res| res.index);
+    results
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_single_batch_session(
+    request_id: RequestId,
+    outgoing: Arc<OutgoingMessageSender>,
+    conversation_manager: Arc<ConversationManager>,
+    running_requests_id_to_codex_uuid: Arc<Mutex<RequestConversationsMap>>,
+    session: BatchSessionConfig,
+) -> BatchSessionResult {
+    let BatchSessionConfig {
+        index,
+        label,
+        prompt,
+        config,
+    } = session;
+
+    let sub_id = format!("{}:{}", request_id_to_string(&request_id), index);
+
+    let new_conversation = match conversation_manager.new_conversation(config).await {
+        Ok(conv) => conv,
+        Err(e) => {
+            let result = CallToolResult {
+                content: vec![ContentBlock::TextContent(TextContent {
+                    r#type: "text".to_string(),
+                    text: format!("Failed to start Codex session: {e}"),
+                    annotations: None,
+                })],
+                is_error: Some(true),
+                structured_content: None,
+            };
+            return BatchSessionResult {
+                index,
+                label,
+                conversation_id: None,
+                completion: ToolCallCompletion::Call(result),
+            };
+        }
+    };
+
+    let NewConversation {
+        conversation_id,
+        conversation,
+        session_configured,
+    } = new_conversation;
+
+    let session_configured_event = Event {
+        id: "".to_string(),
+        msg: EventMsg::SessionConfigured(session_configured.clone()),
+    };
+    outgoing
+        .send_event_as_notification(
+            &session_configured_event,
+            Some(OutgoingNotificationMeta::new(Some(request_id.clone()))),
+        )
+        .await;
+
+    add_request_conversation(
+        &running_requests_id_to_codex_uuid,
+        &request_id,
+        RequestConversationEntry::new(conversation_id, sub_id.clone()),
+    )
+    .await;
+
+    let submission = Submission {
+        id: sub_id.clone(),
+        op: Op::UserInput {
+            items: vec![InputItem::Text {
+                text: prompt.clone(),
+            }],
+        },
+    };
+
+    if let Err(e) = conversation.submit_with_id(submission).await {
+        tracing::error!("Failed to submit initial prompt: {e}");
+        remove_request_conversation(
+            &running_requests_id_to_codex_uuid,
+            &request_id,
+            conversation_id,
+        )
+        .await;
+        let result = CallToolResult {
+            content: vec![ContentBlock::TextContent(TextContent {
+                r#type: "text".to_string(),
+                text: format!("Failed to submit initial prompt: {e}"),
+                annotations: None,
+            })],
+            is_error: Some(true),
+            structured_content: None,
+        };
+        return BatchSessionResult {
+            index,
+            label,
+            conversation_id: Some(conversation_id),
+            completion: ToolCallCompletion::Call(result),
+        };
+    }
+
+    let completion = run_codex_tool_session_inner(
+        conversation,
+        outgoing,
+        request_id,
+        running_requests_id_to_codex_uuid,
+        conversation_id,
+        sub_id,
+    )
+    .await;
+
+    BatchSessionResult {
+        index,
+        label,
+        conversation_id: Some(conversation_id),
+        completion,
+    }
+}
+
+pub(crate) fn request_id_to_string(id: &RequestId) -> String {
+    match id {
+        RequestId::String(s) => s.clone(),
+        RequestId::Integer(n) => n.to_string(),
     }
 }

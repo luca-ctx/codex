@@ -615,7 +615,6 @@ pub(crate) fn build_specs(
     use crate::exec_command::create_exec_command_tool_for_responses_api;
     use crate::exec_command::create_write_stdin_tool_for_responses_api;
     use crate::tools::handlers::ApplyPatchHandler;
-    use crate::tools::handlers::DelegateWorkerHandler;
     use crate::tools::handlers::ExecStreamHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::McpHandler;
@@ -640,7 +639,6 @@ pub(crate) fn build_specs(
     let mcp_handler = Arc::new(McpHandler);
     let session_handler = Arc::new(SessionHandler);
     let review_agent_handler = Arc::new(ReviewAgentHandler);
-    let delegate_worker_handler = Arc::new(DelegateWorkerHandler);
 
     if config.experimental_unified_exec_tool {
         builder.push_spec(create_unified_exec_tool());
@@ -702,23 +700,6 @@ pub(crate) fn build_specs(
         },
     }));
     builder.register_handler("request_code_review", review_agent_handler);
-
-    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
-        name: "delegate_to_worker".to_string(),
-        description: "Delegate work to a worker agent with a provided plan. Optionally specify a worker model.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties: {
-                let mut p = std::collections::BTreeMap::new();
-                p.insert("worker_plan".to_string(), JsonSchema::String { description: Some("Detailed plan/instructions for the worker agent".to_string()) });
-                p.insert("worker_model".to_string(), JsonSchema::String { description: Some("Optional worker model".to_string()) });
-                p
-            },
-            required: Some(vec!["worker_plan".to_string()]),
-            additional_properties: Some(false.into()),
-        },
-    }));
-    builder.register_handler("delegate_to_worker", delegate_worker_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -861,7 +842,6 @@ mod tests {
                 "update_plan",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "web_search",
                 "view_image",
             ],
@@ -889,7 +869,6 @@ mod tests {
                 "update_plan",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "web_search",
                 "view_image",
             ],
@@ -1000,7 +979,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "web_search",
                 "view_image",
                 "test_server/do_something_cool",
@@ -1008,7 +986,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1121,7 +1099,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "view_image",
                 "test_server/cool",
                 "test_server/do",
@@ -1174,7 +1151,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1183,7 +1159,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[7].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1244,7 +1220,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1252,7 +1227,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[7].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -1311,7 +1286,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1319,7 +1293,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[7].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1381,7 +1355,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1389,7 +1362,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[7].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
@@ -1488,7 +1461,6 @@ mod tests {
                 "unified_exec",
                 "permanently_terminate_session",
                 "request_code_review",
-                "delegate_to_worker",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1497,7 +1469,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[7].spec,
+            tools[6].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {

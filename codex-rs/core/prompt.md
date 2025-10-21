@@ -150,7 +150,7 @@ If completing the user's task requires writing or modifying files, your code and
 
 - When keep-going (continue) mode is active, only end the session by calling the `permanently_terminate_session` tool. Use it only when absolutely nothing remains to fix or improve.
 - To request a code review during a turn, call `request_code_review` with an optional plan and scope (e.g., HEAD diff). The review runs in a child session and returns a comprehensive text report.
-- To delegate work to a worker agent, call `delegate_to_worker` with a clear `worker_plan` and optional `worker_model`. The worker will perform the plan and return results; you remain responsible for orchestration.
+- To launch multiple focused sub-sessions, use the MCP `codex-batch` tool (when available) to start workers in parallel and follow up with `codex-reply` per conversation as needed.
 
 ## Sandbox and approvals
 

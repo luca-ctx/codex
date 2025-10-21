@@ -1,0 +1,7 @@
+model_auto_compact_token_limit = 100000
+
+[mcp_servers.local-codex]
+command = "/home/luca/code/codex/codex-rs/target/debug/codex-mcp-server"
+
+[projects."/home/luca/code/codex"]
+trust_level = "trusted"

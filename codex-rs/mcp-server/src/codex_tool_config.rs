@@ -1,5 +1,6 @@
 //! Configuration object accepted by the `codex` MCP tool-call.
 
+use crate::codex_tool_runner::BatchSessionConfig;
 use codex_core::protocol::AskForApproval;
 use codex_protocol::config_types::SandboxMode;
 use codex_utils_json_to_toml::json_to_toml;
@@ -53,6 +54,39 @@ pub struct CodexToolCallParam {
     /// Whether to include the plan tool in the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_plan_tool: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct CodexBatchToolCallParam {
+    pub sessions: Vec<CodexBatchSessionParam>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct CodexBatchSessionParam {
+    #[serde(flatten)]
+    pub config: CodexToolCallParam,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl CodexBatchSessionParam {
+    pub async fn into_batch_config(
+        self,
+        codex_linux_sandbox_exe: Option<PathBuf>,
+        index: usize,
+    ) -> std::io::Result<BatchSessionConfig> {
+        let Self { config, label } = self;
+        let (prompt, cfg) = config.into_config(codex_linux_sandbox_exe).await?;
+        Ok(BatchSessionConfig {
+            index,
+            label,
+            prompt,
+            config: cfg,
+        })
+    }
 }
 
 /// Custom enum mirroring [`AskForApproval`], but has an extra dependency on
@@ -124,6 +158,37 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
         output_schema: None,
         description: Some(
             "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.".to_string(),
+        ),
+        annotations: None,
+    }
+}
+
+pub(crate) fn create_tool_for_codex_batch_tool_call_param() -> Tool {
+    let schema = SchemaSettings::draft2019_09()
+        .with(|s| {
+            s.inline_subschemas = true;
+            s.option_add_null_type = false;
+        })
+        .into_generator()
+        .into_root_schema_for::<CodexBatchToolCallParam>();
+
+    #[expect(clippy::expect_used)]
+    let schema_value =
+        serde_json::to_value(&schema).expect("Codex batch tool schema should serialise to JSON");
+
+    let tool_input_schema =
+        serde_json::from_value::<ToolInputSchema>(schema_value).unwrap_or_else(|e| {
+            panic!("failed to create Tool from schema: {e}");
+        });
+
+    Tool {
+        name: "codex-batch".to_string(),
+        title: Some("Codex Batch".to_string()),
+        input_schema: tool_input_schema,
+        output_schema: None,
+        description: Some(
+            "Run multiple Codex sessions concurrently. Provide an array of session configurations."
+                .to_string(),
         ),
         annotations: None,
     }

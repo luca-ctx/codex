@@ -19,6 +19,7 @@ At a glance:
   - `listConversations`, `resumeConversation`, `archiveConversation`
 - Tools
   - `codex` — launch a new Codex session (accepts prompt/config overrides)
+  - `codex-batch` — launch multiple Codex sessions in parallel; each returns a conversation id for follow-up
   - `codex-reply` — continue an existing Codex session by conversation id
   - `codex-code-review` — trigger the review workflow for an existing session (requires the session id and custom review instructions)
 - Configuration and info

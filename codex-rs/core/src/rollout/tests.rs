@@ -974,8 +974,7 @@ async fn find_conversation_paths_by_session_name_matches_slug() -> Result<()> {
         0,
         Some(SessionSource::Cli),
         Some("Peanuts"),
-    )?
-    .0;
+    )?;
 
     let peanuts22_uuid = Uuid::from_u128(602);
     write_session_file(
@@ -985,8 +984,7 @@ async fn find_conversation_paths_by_session_name_matches_slug() -> Result<()> {
         0,
         Some(SessionSource::Cli),
         Some("Peanuts22"),
-    )?
-    .0;
+    )?;
 
     let slug_matches = find_conversation_paths_by_name(home, "peanuts").await?;
     assert_eq!(slug_matches.len(), 1);
