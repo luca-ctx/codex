@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(long = "oss", default_value_t = false)]
     pub oss: bool,
 
+    /// Optional human-readable name for this session.
+    #[arg(long = "session-name", value_name = "TITLE")]
+    pub session_name: Option<String>,
+
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]
     pub config_profile: Option<String>,

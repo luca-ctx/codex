@@ -127,6 +127,12 @@ pub enum Op {
         summary: Option<ReasoningSummaryConfig>,
     },
 
+    /// Rename the current session. Changes are persisted in the rollout when supported.
+    RenameSession {
+        /// New human-readable title for the session.
+        title: String,
+    },
+
     /// Approve a command execution
     ExecApproval {
         /// The id of the submission we are approving
@@ -519,6 +525,8 @@ pub enum EventMsg {
     ShutdownComplete,
 
     ConversationPath(ConversationPathResponseEvent),
+
+    SessionRenamed(SessionRenamedEvent),
 
     /// Entered review mode.
     EnteredReviewMode(ReviewRequest),
@@ -959,6 +967,36 @@ impl InitialHistory {
             ),
         }
     }
+
+    pub fn latest_session_name(&self) -> Option<SessionName> {
+        let mut latest: Option<SessionName> = None;
+        match self {
+            InitialHistory::New => {}
+            InitialHistory::Resumed(resumed) => {
+                for item in &resumed.history {
+                    if let Some(name) = extract_session_name(item) {
+                        latest = Some(name);
+                    }
+                }
+            }
+            InitialHistory::Forked(items) => {
+                for item in items {
+                    if let Some(name) = extract_session_name(item) {
+                        latest = Some(name);
+                    }
+                }
+            }
+        }
+        latest
+    }
+}
+
+fn extract_session_name(item: &RolloutItem) -> Option<SessionName> {
+    match item {
+        RolloutItem::SessionMeta(meta) => meta.meta.name.clone(),
+        RolloutItem::SessionNameUpdate(update) => Some(update.name.clone()),
+        _ => None,
+    }
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, TS, Default)]
@@ -974,6 +1012,14 @@ pub enum SessionSource {
     Unknown,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, TS)]
+pub struct SessionName {
+    /// Human-readable title supplied by the user.
+    pub title: String,
+    /// Canonical slug derived from the title. Lowercase and shell-friendly.
+    pub slug: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, TS)]
 pub struct SessionMeta {
     pub id: ConversationId,
@@ -984,6 +1030,8 @@ pub struct SessionMeta {
     pub instructions: Option<String>,
     #[serde(default)]
     pub source: SessionSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<SessionName>,
 }
 
 impl Default for SessionMeta {
@@ -996,6 +1044,7 @@ impl Default for SessionMeta {
             cli_version: String::new(),
             instructions: None,
             source: SessionSource::default(),
+            name: None,
         }
     }
 }
@@ -1008,10 +1057,16 @@ pub struct SessionMetaLine {
     pub git: Option<GitInfo>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, TS)]
+pub struct SessionNameUpdate {
+    pub name: SessionName,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum RolloutItem {
     SessionMeta(SessionMetaLine),
+    SessionNameUpdate(SessionNameUpdate),
     ResponseItem(ResponseItem),
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
@@ -1314,6 +1369,14 @@ pub struct SessionConfiguredEvent {
     pub initial_messages: Option<Vec<EventMsg>>,
 
     pub rollout_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<SessionName>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, TS)]
+pub struct SessionRenamedEvent {
+    pub session_id: ConversationId,
+    pub name: SessionName,
 }
 
 /// User's decision in response to an ExecApprovalRequest.

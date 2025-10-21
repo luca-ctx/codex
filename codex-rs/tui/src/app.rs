@@ -19,6 +19,7 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config::persist_model_selection;
 use codex_core::model_family::find_family_for_model;
+use codex_core::protocol::SessionName;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
@@ -45,6 +46,7 @@ pub struct AppExitInfo {
     pub token_usage: TokenUsage,
     pub conversation_id: Option<ConversationId>,
     pub update_action: Option<UpdateAction>,
+    pub session_name: Option<SessionName>,
 }
 
 pub(crate) struct App {
@@ -180,6 +182,7 @@ impl App {
             token_usage: app.token_usage(),
             conversation_id: app.chat_widget.conversation_id(),
             update_action: app.pending_update_action,
+            session_name: app.chat_widget.session_name(),
         })
     }
 
@@ -579,6 +582,7 @@ mod tests {
                 history_entry_count: 0,
                 initial_messages: None,
                 rollout_path: PathBuf::new(),
+                name: None,
             };
             Arc::new(new_session_info(
                 app.chat_widget.config_ref(),

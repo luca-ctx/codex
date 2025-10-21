@@ -287,6 +287,7 @@ pub(crate) async fn run_codex_tool_session_inner(
                     | EventMsg::GetHistoryEntryResponse(_)
                     | EventMsg::PlanUpdate(_)
                     | EventMsg::TurnAborted(_)
+                    | EventMsg::SessionRenamed(_)
                     | EventMsg::ConversationPath(_)
                     | EventMsg::UserMessage(_)
                     | EventMsg::ShutdownComplete

@@ -83,6 +83,7 @@ use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
+use crate::hook_runner::TurnFinishedHookContext;
 use crate::hook_runner::TurnFinishedHookRunner;
 use crate::hook_runner::default_turn_finished_hook_runner;
 use crate::markdown::append_markdown;
@@ -110,6 +111,8 @@ use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use codex_core::protocol::SessionName;
+use codex_core::protocol::SessionRenamedEvent;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_file_search::FileMatch;
 use codex_git_tooling::CreateGhostCommitOptions;
@@ -252,6 +255,7 @@ pub(crate) struct ChatWidget {
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     conversation_id: Option<ConversationId>,
+    session_name: Option<SessionName>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
     show_welcome_banner: bool,
@@ -302,6 +306,38 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
+    fn extract_rename_command_input(text: &str) -> Option<&str> {
+        let trimmed = text.trim();
+        if !trimmed.starts_with('/') {
+            return None;
+        }
+        let mut parts = trimmed.splitn(2, |c: char| c.is_whitespace());
+        let command = parts.next()?;
+        if command != "/rename" {
+            return None;
+        }
+        let remainder = parts.next().unwrap_or("");
+        Some(remainder.trim())
+    }
+
+    fn handle_rename_command(&mut self, input: &str) -> bool {
+        if input.is_empty() {
+            self.add_to_history(history_cell::new_info_event(
+                "Usage: /rename <new name>".to_string(),
+                None,
+            ));
+            self.request_redraw();
+            return true;
+        }
+        self.submit_op(Op::RenameSession {
+            title: input.to_string(),
+        });
+        let message = format!("Renaming session to `{input}`...");
+        self.add_to_history(history_cell::new_info_event(message, None));
+        self.request_redraw();
+        true
+    }
+
     fn model_description_for(slug: &str) -> Option<&'static str> {
         if slug.starts_with("gpt-5-codex") {
             Some("Optimized for coding tasks with many tools.")
@@ -336,7 +372,11 @@ impl ChatWidget {
         let Some(command) = self.turn_finished_hook_command.as_deref() else {
             return;
         };
-        self.turn_finished_hook_runner.run(command);
+        let context = TurnFinishedHookContext {
+            conversation_id: self.conversation_id.as_ref(),
+            session_name: self.session_name.as_ref(),
+        };
+        self.turn_finished_hook_runner.run(command, &context);
     }
 
     // --- Small event handlers ---
@@ -344,6 +384,8 @@ impl ChatWidget {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.conversation_id = Some(event.session_id);
+        let session_name = event.name.clone();
+        self.session_name = session_name;
         let initial_messages = event.initial_messages.clone();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
@@ -373,6 +415,13 @@ impl ChatWidget {
         }
         self.flush_answer_stream_with_separator();
         self.handle_stream_finished();
+        self.request_redraw();
+    }
+
+    fn on_session_renamed(&mut self, event: SessionRenamedEvent) {
+        self.session_name = Some(event.name.clone());
+        let message = format!("Session renamed to `{}`.", event.name.title);
+        self.add_to_history(history_cell::new_info_event(message, None));
         self.request_redraw();
     }
 
@@ -993,6 +1042,7 @@ impl ChatWidget {
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
+            session_name: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
             suppress_session_configured_redraw: false,
@@ -1066,6 +1116,7 @@ impl ChatWidget {
             current_status_header: String::from("Working"),
             retry_status_header: None,
             conversation_id: None,
+            session_name: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
             suppress_session_configured_redraw: true,
@@ -1255,6 +1306,14 @@ impl ChatWidget {
             SlashCommand::Status => {
                 self.add_status_output();
             }
+            SlashCommand::Rename => {
+                self.set_composer_text("/rename ".to_string());
+                self.add_to_history(history_cell::new_info_event(
+                    "Type the new session name after `/rename` and press Enter.".to_string(),
+                    None,
+                ));
+                self.request_redraw();
+            }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
             }
@@ -1312,6 +1371,12 @@ impl ChatWidget {
         if text.is_empty() && image_paths.is_empty() {
             return;
         }
+
+        if image_paths.is_empty() && !text.is_empty()
+            && let Some(arg) = Self::extract_rename_command_input(&text)
+                && self.handle_rename_command(arg) {
+                    return;
+                }
 
         self.capture_ghost_snapshot();
 
@@ -1515,6 +1580,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
+            EventMsg::SessionRenamed(ev) => self.on_session_renamed(ev),
         }
     }
 
@@ -1951,6 +2017,10 @@ impl ChatWidget {
 
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
+    }
+
+    pub(crate) fn session_name(&self) -> Option<SessionName> {
+        self.session_name.clone()
     }
 
     /// True when the UI is in the regular composer state with no running task,

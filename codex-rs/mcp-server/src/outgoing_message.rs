@@ -259,6 +259,7 @@ mod tests {
                 history_entry_count: 1000,
                 initial_messages: None,
                 rollout_path: rollout_file.path().to_path_buf(),
+                name: None,
             }),
         };
 
@@ -294,6 +295,7 @@ mod tests {
             history_entry_count: 1000,
             initial_messages: None,
             rollout_path: rollout_file.path().to_path_buf(),
+            name: None,
         };
         let event = Event {
             id: "1".to_string(),

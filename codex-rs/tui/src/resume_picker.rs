@@ -224,6 +224,7 @@ struct Row {
     preview: String,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
+    session_name: Option<String>,
 }
 
 impl PickerState {
@@ -406,7 +407,15 @@ impl PickerState {
             self.filtered_rows = self
                 .all_rows
                 .iter()
-                .filter(|r| r.preview.to_lowercase().contains(&q))
+                .filter(|r| {
+                    let preview_match = r.preview.to_lowercase().contains(&q);
+                    let name_match = r
+                        .session_name
+                        .as_ref()
+                        .map(|name| name.to_lowercase().contains(&q))
+                        .unwrap_or(false);
+                    preview_match || name_match
+                })
                 .cloned()
                 .collect();
         }
@@ -596,6 +605,7 @@ fn head_to_row(item: &ConversationItem) -> Row {
         preview,
         created_at,
         updated_at,
+        session_name: item.name.as_ref().map(|n| n.title.clone()),
     }
 }
 
@@ -762,7 +772,16 @@ fn render_list(
         if add_leading_gap {
             preview_width = preview_width.saturating_sub(2);
         }
-        let preview = truncate_text(&row.preview, preview_width);
+        let combined_preview = if let Some(name) = &row.session_name {
+            if row.preview == "(no message yet)" {
+                name.clone()
+            } else {
+                format!("{name} — {}", row.preview)
+            }
+        } else {
+            row.preview.clone()
+        };
+        let preview = truncate_text(&combined_preview, preview_width);
         let mut spans: Vec<Span> = vec![marker];
         if let Some(created) = created_span {
             spans.push(created);
@@ -960,6 +979,7 @@ mod tests {
             tail: Vec::new(),
             created_at: Some(ts.to_string()),
             updated_at: Some(ts.to_string()),
+            name: None,
         }
     }
 
@@ -1022,6 +1042,7 @@ mod tests {
             tail: Vec::new(),
             created_at: Some("2025-01-01T00:00:00Z".into()),
             updated_at: Some("2025-01-01T00:00:00Z".into()),
+            name: None,
         };
         let b = ConversationItem {
             path: PathBuf::from("/tmp/b.jsonl"),
@@ -1029,6 +1050,7 @@ mod tests {
             tail: Vec::new(),
             created_at: Some("2025-01-02T00:00:00Z".into()),
             updated_at: Some("2025-01-02T00:00:00Z".into()),
+            name: None,
         };
         let rows = rows_from_items(vec![a, b]);
         assert_eq!(rows.len(), 2);
@@ -1057,6 +1079,7 @@ mod tests {
             tail,
             created_at: Some("2025-01-01T00:00:00Z".into()),
             updated_at: Some("2025-01-01T01:00:00Z".into()),
+            name: None,
         };
 
         let row = head_to_row(&item);
@@ -1089,18 +1112,21 @@ mod tests {
                 preview: String::from("Fix resume picker timestamps"),
                 created_at: Some(now - Duration::minutes(16)),
                 updated_at: Some(now - Duration::seconds(42)),
+                session_name: None,
             },
             Row {
                 path: PathBuf::from("/tmp/b.jsonl"),
                 preview: String::from("Investigate lazy pagination cap"),
                 created_at: Some(now - Duration::hours(1)),
                 updated_at: Some(now - Duration::minutes(35)),
+                session_name: None,
             },
             Row {
                 path: PathBuf::from("/tmp/c.jsonl"),
                 preview: String::from("Explain the codebase"),
                 created_at: Some(now - Duration::hours(2)),
                 updated_at: Some(now - Duration::hours(2)),
+                session_name: None,
             },
         ];
         state.all_rows = rows.clone();

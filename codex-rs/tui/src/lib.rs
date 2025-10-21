@@ -17,6 +17,7 @@ use codex_core::config::ConfigToml;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::find_conversation_path_by_id_str;
+use codex_core::find_conversation_paths_by_name;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_ollama::DEFAULT_OSS_MODEL;
@@ -181,6 +182,7 @@ pub async fn run_main(
         include_view_image_tool: None,
         show_raw_agent_reasoning: cli.oss.then_some(true),
         tools_web_search_request: cli.web_search.then_some(true),
+        session_name: cli.session_name.clone(),
     };
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
     let overrides_cli = codex_common::CliConfigOverrides { raw_overrides };
@@ -439,6 +441,7 @@ async fn run_ratatui_app(
                 token_usage: codex_core::protocol::TokenUsage::default(),
                 conversation_id: None,
                 update_action: None,
+                session_name: None,
             });
         }
         if should_show_windows_wsl_screen {
@@ -455,8 +458,18 @@ async fn run_ratatui_app(
         match find_conversation_path_by_id_str(&config.codex_home, id_str).await? {
             Some(path) => resume_picker::ResumeSelection::Resume(path),
             None => {
-                error!("Error finding conversation path: {id_str}");
-                resume_picker::ResumeSelection::StartFresh
+                let matches = find_conversation_paths_by_name(&config.codex_home, id_str).await?;
+                match matches.as_slice() {
+                    [path] => resume_picker::ResumeSelection::Resume(path.clone()),
+                    [] => {
+                        error!("Error finding conversation path: {id_str}");
+                        resume_picker::ResumeSelection::StartFresh
+                    }
+                    _ => {
+                        error!("Multiple sessions named `{id_str}`. Use the session ID to resume.");
+                        resume_picker::ResumeSelection::StartFresh
+                    }
+                }
             }
         }
     } else if cli.resume_last {
@@ -484,6 +497,7 @@ async fn run_ratatui_app(
                     token_usage: codex_core::protocol::TokenUsage::default(),
                     conversation_id: None,
                     update_action: None,
+                    session_name: None,
                 });
             }
             other => other,

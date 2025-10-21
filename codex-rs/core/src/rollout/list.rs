@@ -17,6 +17,7 @@ use super::SESSIONS_SUBDIR;
 use crate::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::SessionName;
 use codex_protocol::protocol::SessionSource;
 
 /// Returned page of conversation summaries.
@@ -45,6 +46,8 @@ pub struct ConversationItem {
     pub created_at: Option<String>,
     /// RFC3339 timestamp string for the most recent response in the tail, if available.
     pub updated_at: Option<String>,
+    /// Session name metadata, if available.
+    pub name: Option<SessionName>,
 }
 
 #[derive(Default)]
@@ -56,6 +59,7 @@ struct HeadTailSummary {
     source: Option<SessionSource>,
     created_at: Option<String>,
     updated_at: Option<String>,
+    name: Option<SessionName>,
 }
 
 /// Hard cap to bound worst‑case work per request.
@@ -215,6 +219,7 @@ async fn traverse_directories_for_paths(
                             tail,
                             created_at,
                             mut updated_at,
+                            name,
                             ..
                         } = summary;
                         updated_at = updated_at.or_else(|| created_at.clone());
@@ -224,6 +229,7 @@ async fn traverse_directories_for_paths(
                             tail,
                             created_at,
                             updated_at,
+                            name,
                         });
                     }
                 }
@@ -358,24 +364,27 @@ async fn read_head_and_tail(
                     .created_at
                     .clone()
                     .or_else(|| Some(rollout_line.timestamp.clone()));
-                if let Ok(val) = serde_json::to_value(session_meta_line) {
+                if let Ok(val) = serde_json::to_value(&session_meta_line) {
                     summary.head.push(val);
                     summary.saw_session_meta = true;
                 }
+                if let Some(name) = session_meta_line.meta.name {
+                    summary.name = Some(name);
+                }
+            }
+            RolloutItem::SessionNameUpdate(update) => {
+                summary.name = Some(update.name);
             }
             RolloutItem::ResponseItem(item) => {
                 summary.created_at = summary
                     .created_at
                     .clone()
                     .or_else(|| Some(rollout_line.timestamp.clone()));
-                if let Ok(val) = serde_json::to_value(item) {
+                if let Ok(val) = serde_json::to_value(&item) {
                     summary.head.push(val);
                 }
             }
-            RolloutItem::TurnContext(_) => {
-                // Not included in `head`; skip.
-            }
-            RolloutItem::Compacted(_) => {
+            RolloutItem::TurnContext(_) | RolloutItem::Compacted(_) => {
                 // Not included in `head`; skip.
             }
             RolloutItem::EventMsg(ev) => {
@@ -383,6 +392,30 @@ async fn read_head_and_tail(
                     summary.saw_user_event = true;
                 }
             }
+        }
+    }
+
+    // Continue scanning remaining lines to capture late-arriving metadata updates (e.g., renames).
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
+        let Ok(rollout_line) = parsed else { continue };
+        match rollout_line.item {
+            RolloutItem::SessionMeta(session_meta_line) => {
+                if let Some(name) = session_meta_line.meta.name {
+                    summary.name = Some(name);
+                }
+                if summary.source.is_none() {
+                    summary.source = Some(session_meta_line.meta.source);
+                }
+            }
+            RolloutItem::SessionNameUpdate(update) => {
+                summary.name = Some(update.name);
+            }
+            _ => {}
         }
     }
 
@@ -523,4 +556,42 @@ pub async fn find_conversation_path_by_id_str(
         .into_iter()
         .next()
         .map(|m| root.join(m.path)))
+}
+
+pub async fn find_conversation_paths_by_name(
+    codex_home: &Path,
+    name: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let sessions_dir = codex_home.join(SESSIONS_SUBDIR);
+    if !sessions_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let target = trimmed.to_lowercase();
+
+    let mut matches: Vec<PathBuf> = Vec::new();
+    let mut cursor: Option<Cursor> = None;
+
+    loop {
+        let page = get_conversations(codex_home, 256, cursor.as_ref(), &[]).await?;
+        for item in &page.items {
+            if let Some(session_name) = &item.name {
+                let slug_match = session_name.slug.eq_ignore_ascii_case(&target);
+                let title_match = session_name.title.to_lowercase() == target;
+                if slug_match || title_match {
+                    matches.push(item.path.clone());
+                }
+            }
+        }
+        if page.next_cursor.is_none() {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+
+    Ok(matches)
 }

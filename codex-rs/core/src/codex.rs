@@ -20,6 +20,8 @@ use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionName;
+use codex_protocol::protocol::SessionRenamedEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TaskStartedEvent;
 use codex_protocol::protocol::TurnAbortReason;
@@ -60,6 +62,7 @@ use crate::executor::Executor;
 use crate::executor::ExecutorConfig;
 use crate::executor::normalize_exec_result;
 use crate::features::Feature;
+use crate::make_session_name;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::model_family::find_family_for_model;
@@ -249,6 +252,7 @@ pub(crate) struct Session {
     state: Mutex<SessionState>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
+    session_name: Mutex<Option<SessionName>>,
     next_internal_sub_id: AtomicU64,
 }
 
@@ -338,6 +342,14 @@ impl Session {
             return Err(anyhow::anyhow!("cwd is not absolute: {cwd:?}"));
         }
 
+        let configured_session_name = config.session_name.clone();
+        let initial_session_name = match &initial_history {
+            InitialHistory::New => configured_session_name.clone(),
+            _ => initial_history
+                .latest_session_name()
+                .or_else(|| configured_session_name.clone()),
+        };
+
         let (conversation_id, rollout_params) = match &initial_history {
             InitialHistory::New | InitialHistory::Forked(_) => {
                 let conversation_id = ConversationId::default();
@@ -347,6 +359,7 @@ impl Session {
                         conversation_id,
                         user_instructions.clone(),
                         session_source,
+                        initial_session_name.clone(),
                     ),
                 )
             }
@@ -518,6 +531,7 @@ impl Session {
             state: Mutex::new(state),
             active_turn: Mutex::new(None),
             services,
+            session_name: Mutex::new(initial_session_name.clone()),
             next_internal_sub_id: AtomicU64::new(0),
         });
 
@@ -537,6 +551,7 @@ impl Session {
                 history_entry_count,
                 initial_messages,
                 rollout_path,
+                name: initial_session_name.clone(),
             }),
         })
         .chain(post_session_configured_error_events.into_iter());
@@ -549,6 +564,60 @@ impl Session {
 
     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
         self.tx_event.clone()
+    }
+
+    async fn rename_session(&self, title: String) {
+        let session_name = match make_session_name(&title) {
+            Ok(name) => name,
+            Err(err) => {
+                let event = Event {
+                    id: INITIAL_SUBMIT_ID.to_owned(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: err.to_string(),
+                    }),
+                };
+                self.send_event(event).await;
+                return;
+            }
+        };
+
+        {
+            let mut guard = self.session_name.lock().await;
+            if guard.as_ref() == Some(&session_name) {
+                drop(guard);
+                let event = Event {
+                    id: INITIAL_SUBMIT_ID.to_owned(),
+                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+                        message: format!("Session name is already `{}`.", session_name.title),
+                    }),
+                };
+                self.send_event(event).await;
+                return;
+            }
+            *guard = Some(session_name.clone());
+        }
+
+        let recorder = {
+            let guard = self.services.rollout.lock().await;
+            guard.as_ref().cloned()
+        };
+        if let Some(recorder) = recorder
+            && let Err(err) = recorder.record_session_name(&session_name).await {
+                warn!("failed to record session rename: {err}");
+            }
+
+        let event = Event {
+            id: INITIAL_SUBMIT_ID.to_owned(),
+            msg: EventMsg::SessionRenamed(SessionRenamedEvent {
+                session_id: self.conversation_id,
+                name: session_name,
+            }),
+        };
+        self.send_event(event).await;
+    }
+
+    pub(crate) async fn session_name(&self) -> Option<SessionName> {
+        self.session_name.lock().await.clone()
     }
 
     fn next_internal_sub_id(&self) -> String {
@@ -1266,6 +1335,9 @@ async fn submission_loop(
                     .await;
                 }
             }
+            Op::RenameSession { title } => {
+                sess.rename_session(title).await;
+            }
             Op::UserInput { items } => {
                 turn_context
                     .client
@@ -1917,6 +1989,7 @@ pub(crate) async fn run_task(
                             turn_id: sub_id.clone(),
                             input_messages: turn_input_messages,
                             last_assistant_message: last_agent_message.clone(),
+                            session_name: sess.session_name().await,
                         });
                     break;
                 }
@@ -2955,6 +3028,7 @@ mod tests {
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
             services,
+             session_name: Mutex::new(None),
             next_internal_sub_id: AtomicU64::new(0),
         };
         (session, turn_context)
@@ -3029,6 +3103,7 @@ mod tests {
             state: Mutex::new(SessionState::new()),
             active_turn: Mutex::new(None),
             services,
+            session_name: Mutex::new(None),
             next_internal_sub_id: AtomicU64::new(0),
         });
         (session, turn_context, rx_event)

@@ -33,6 +33,7 @@ use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::session_name::normalize_session_name;
 use anyhow::Context;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
@@ -40,6 +41,7 @@ use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::protocol::SessionName;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use dirs::home_dir;
 use serde::Deserialize;
@@ -142,6 +144,9 @@ pub struct Config {
 
     /// Lifecycle hooks triggered by specific agent actions.
     pub hooks: Hooks,
+
+    /// Optional human-friendly session name used for resume/notifications.
+    pub session_name: Option<SessionName>,
 
     /// TUI notifications preference. When set, the TUI will send OSC 9 notifications on approvals
     /// and turn completions when not focused.
@@ -746,6 +751,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub hooks: Hooks,
 
+    /// Optional human-friendly session name used for resume/notifications.
+    pub session_name: Option<String>,
+
     /// System instructions.
     pub instructions: Option<String>,
 
@@ -977,6 +985,7 @@ pub struct ConfigOverrides {
     pub include_view_image_tool: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
+    pub session_name: Option<String>,
 }
 
 impl Config {
@@ -1005,6 +1014,7 @@ impl Config {
             include_view_image_tool: include_view_image_tool_override,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
+            session_name: session_name_override,
         } = overrides;
 
         let active_profile_name = config_profile_key
@@ -1057,6 +1067,11 @@ impl Config {
             .clone();
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
+
+        let session_name = session_name_override
+            .as_deref()
+            .and_then(normalize_session_name)
+            .or_else(|| cfg.session_name.as_deref().and_then(normalize_session_name));
 
         let resolved_cwd = {
             use std::env;
@@ -1211,6 +1226,7 @@ impl Config {
             active_profile: active_profile_name,
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            session_name,
             tui_notifications: cfg
                 .tui
                 .as_ref()
@@ -2241,6 +2257,7 @@ model_verbosity = "high"
                 user_instructions: None,
                 notify: None,
                 hooks: Hooks::default(),
+                session_name: None,
                 cwd: fixture.cwd(),
                 mcp_servers: HashMap::new(),
                 mcp_oauth_credentials_store_mode: Default::default(),
@@ -2335,6 +2352,7 @@ command = "terminal-notifier 'turn finished'"
             user_instructions: None,
             notify: None,
             hooks: Hooks::default(),
+            session_name: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),
@@ -2415,6 +2433,7 @@ command = "terminal-notifier 'turn finished'"
             user_instructions: None,
             notify: None,
             hooks: Hooks::default(),
+            session_name: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),
@@ -2481,6 +2500,7 @@ command = "terminal-notifier 'turn finished'"
             user_instructions: None,
             notify: None,
             hooks: Hooks::default(),
+            session_name: None,
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),

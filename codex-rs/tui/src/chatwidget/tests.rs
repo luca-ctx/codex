@@ -116,6 +116,7 @@ fn resumed_initial_messages_render_history() {
             }),
         ]),
         rollout_path: rollout_file.path().to_path_buf(),
+        name: None,
     };
 
     chat.handle_codex_event(Event {
@@ -347,6 +348,7 @@ fn make_chatwidget_manual() -> (
         current_status_header: String::from("Working"),
         retry_status_header: None,
         conversation_id: None,
+        session_name: None,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
@@ -382,7 +384,7 @@ struct TestHookRunner {
 }
 
 impl crate::hook_runner::TurnFinishedHookRunner for TestHookRunner {
-    fn run(&self, command: &str) {
+    fn run(&self, command: &str, _context: &crate::hook_runner::TurnFinishedHookContext) {
         self.invocations
             .lock()
             .expect("lock hook invocations")

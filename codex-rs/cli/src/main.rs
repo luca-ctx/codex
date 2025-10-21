@@ -209,6 +209,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     let AppExitInfo {
         token_usage,
         conversation_id,
+        session_name,
         ..
     } = exit_info;
 
@@ -221,7 +222,18 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
         codex_core::protocol::FinalOutput::from(token_usage)
     )];
 
-    if let Some(session_id) = conversation_id {
+    if let Some(name) = session_name {
+        let resume_cmd = format!("codex resume {}", name.slug);
+        let command = if color_enabled {
+            resume_cmd.cyan().to_string()
+        } else {
+            resume_cmd
+        };
+        lines.push(format!("To continue this session, run {command}"));
+        if let Some(session_id) = conversation_id {
+            lines.push(format!("Session id: {session_id}"));
+        }
+    } else if let Some(session_id) = conversation_id {
         let resume_cmd = format!("codex resume {session_id}");
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
@@ -619,6 +631,7 @@ mod tests {
                 .map(ConversationId::from_string)
                 .map(Result::unwrap),
             update_action: None,
+            session_name: None,
         }
     }
 
@@ -628,6 +641,7 @@ mod tests {
             token_usage: TokenUsage::default(),
             conversation_id: None,
             update_action: None,
+            session_name: None,
         };
         let lines = format_exit_messages(exit_info, false);
         assert!(lines.is_empty());
@@ -643,6 +657,24 @@ mod tests {
                 "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
                     .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn format_exit_messages_prefers_session_name_slug() {
+        let mut exit_info = sample_exit_info(Some("123e4567-e89b-12d3-a456-426614174000"));
+        exit_info.session_name = Some(SessionName {
+            title: "Testing Edge Functions".to_string(),
+            slug: "testing-edge-functions".to_string(),
+        });
+        let lines = format_exit_messages(exit_info, false);
+        assert_eq!(
+            lines,
+            vec![
+                "Token usage: total=2 input=0 output=2".to_string(),
+                "To continue this session, run codex resume testing-edge-functions".to_string(),
+                "Session id: 123e4567-e89b-12d3-a456-426614174000".to_string(),
             ]
         );
     }

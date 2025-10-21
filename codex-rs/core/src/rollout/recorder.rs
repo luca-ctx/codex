@@ -32,6 +32,8 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::SessionName;
+use codex_protocol::protocol::SessionNameUpdate;
 use codex_protocol::protocol::SessionSource;
 
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
@@ -55,6 +57,7 @@ pub enum RolloutRecorderParams {
         conversation_id: ConversationId,
         instructions: Option<String>,
         source: SessionSource,
+        session_name: Option<SessionName>,
     },
     Resume {
         path: PathBuf,
@@ -77,11 +80,13 @@ impl RolloutRecorderParams {
         conversation_id: ConversationId,
         instructions: Option<String>,
         source: SessionSource,
+        session_name: Option<SessionName>,
     ) -> Self {
         Self::Create {
             conversation_id,
             instructions,
             source,
+            session_name,
         }
     }
 
@@ -110,6 +115,7 @@ impl RolloutRecorder {
                 conversation_id,
                 instructions,
                 source,
+                session_name,
             } => {
                 let LogFileInfo {
                     file,
@@ -137,6 +143,7 @@ impl RolloutRecorder {
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         instructions,
                         source,
+                        name: session_name,
                     }),
                 )
             }
@@ -183,6 +190,11 @@ impl RolloutRecorder {
             .send(RolloutCmd::AddItems(filtered))
             .await
             .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))
+    }
+
+    pub(crate) async fn record_session_name(&self, name: &SessionName) -> std::io::Result<()> {
+        let update = RolloutItem::SessionNameUpdate(SessionNameUpdate { name: name.clone() });
+        self.record_items(&[update]).await
     }
 
     /// Flush all queued writes and wait until they are committed by the writer task.
@@ -236,6 +248,9 @@ impl RolloutRecorder {
                     }
                     RolloutItem::TurnContext(item) => {
                         items.push(RolloutItem::TurnContext(item));
+                    }
+                    RolloutItem::SessionNameUpdate(update) => {
+                        items.push(RolloutItem::SessionNameUpdate(update));
                     }
                     RolloutItem::EventMsg(_ev) => {
                         items.push(RolloutItem::EventMsg(_ev));

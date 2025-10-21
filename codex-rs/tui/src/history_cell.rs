@@ -503,12 +503,10 @@ pub(crate) fn new_session_info(
     let SessionConfiguredEvent {
         model,
         reasoning_effort,
-        session_id: _,
-        history_log_id: _,
-        history_entry_count: _,
-        initial_messages: _,
-        rollout_path: _,
+        name,
+        ..
     } = event;
+    let session_name = name.map(|n| n.title);
     if is_first_event {
         // Header box rendered as history (so it appears at the very top)
         let header = SessionHeaderHistoryCell::new(
@@ -516,6 +514,7 @@ pub(crate) fn new_session_info(
             reasoning_effort,
             config.cwd.clone(),
             crate::version::CODEX_CLI_VERSION,
+            session_name,
         );
 
         // Help lines below the header (new copy and list)
@@ -543,6 +542,11 @@ pub(crate) fn new_session_info(
                 "  ".into(),
                 "/model".into(),
                 " - choose what model and reasoning effort to use".dim(),
+            ]),
+            Line::from(vec![
+                "  ".into(),
+                "/rename".into(),
+                " - rename this session".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -581,6 +585,7 @@ struct SessionHeaderHistoryCell {
     model: String,
     reasoning_effort: Option<ReasoningEffortConfig>,
     directory: PathBuf,
+    session_name: Option<String>,
 }
 
 impl SessionHeaderHistoryCell {
@@ -589,12 +594,14 @@ impl SessionHeaderHistoryCell {
         reasoning_effort: Option<ReasoningEffortConfig>,
         directory: PathBuf,
         version: &'static str,
+        session_name: Option<String>,
     ) -> Self {
         Self {
             version,
             model,
             reasoning_effort,
             directory,
+            session_name,
         }
     }
 
@@ -654,11 +661,14 @@ impl HistoryCell for SessionHeaderHistoryCell {
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
         const DIR_LABEL: &str = "directory:";
-        let label_width = DIR_LABEL.len();
+        const MODEL_LABEL: &str = "model:";
+        const SESSION_LABEL: &str = "session:";
+        let label_width = DIR_LABEL
+            .len()
+            .max(MODEL_LABEL.len())
+            .max(SESSION_LABEL.len());
         let model_label = format!(
-            "{model_label:<label_width$}",
-            model_label = "model:",
-            label_width = label_width
+            "{MODEL_LABEL:<label_width$}"
         );
         let reasoning_label = self.reasoning_label();
         let mut model_spans: Vec<Span<'static>> = vec![
@@ -673,6 +683,23 @@ impl HistoryCell for SessionHeaderHistoryCell {
         model_spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
         model_spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
 
+        let mut lines = vec![
+            make_row(title_spans),
+            make_row(Vec::new()),
+            make_row(model_spans),
+        ];
+
+        if let Some(name) = &self.session_name {
+            let session_label = format!(
+                "{SESSION_LABEL:<label_width$}"
+            );
+            let session_spans = vec![
+                Span::from(format!("{session_label} ")).dim(),
+                Span::from(name.clone()),
+            ];
+            lines.push(make_row(session_spans));
+        }
+
         let dir_label = format!("{DIR_LABEL:<label_width$}");
         let dir_prefix = format!("{dir_label} ");
         let dir_prefix_width = UnicodeWidthStr::width(dir_prefix.as_str());
@@ -680,12 +707,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
 
-        let lines = vec![
-            make_row(title_spans),
-            make_row(Vec::new()),
-            make_row(model_spans),
-            make_row(dir_spans),
-        ];
+        lines.push(make_row(dir_spans));
 
         with_border(lines)
     }
@@ -1539,6 +1561,7 @@ mod tests {
             Some(ReasoningEffortConfig::High),
             std::env::temp_dir(),
             "test",
+            None,
         );
 
         let lines = render_lines(&cell.display_lines(80));

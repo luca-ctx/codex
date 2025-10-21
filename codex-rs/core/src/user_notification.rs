@@ -1,3 +1,4 @@
+use codex_protocol::protocol::SessionName;
 use serde::Serialize;
 use tracing::error;
 use tracing::warn;
@@ -57,6 +58,9 @@ pub(crate) enum UserNotification {
 
         /// The last message sent by the assistant in the turn.
         last_assistant_message: Option<String>,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_name: Option<SessionName>,
     },
 }
 
@@ -74,11 +78,15 @@ mod tests {
             last_assistant_message: Some(
                 "Rename complete and verified `cargo build` succeeds.".to_string(),
             ),
+            session_name: Some(SessionName {
+                title: "Testing Edge Functions".to_string(),
+                slug: "testing-edge-functions".to_string(),
+            }),
         };
         let serialized = serde_json::to_string(&notification)?;
         assert_eq!(
             serialized,
-            r#"{"type":"agent-turn-complete","thread-id":"b5f6c1c2-1111-2222-3333-444455556666","turn-id":"12345","input-messages":["Rename `foo` to `bar` and update the callsites."],"last-assistant-message":"Rename complete and verified `cargo build` succeeds."}"#
+            r#"{"type":"agent-turn-complete","thread-id":"b5f6c1c2-1111-2222-3333-444455556666","turn-id":"12345","input-messages":["Rename `foo` to `bar` and update the callsites."],"last-assistant-message":"Rename complete and verified `cargo build` succeeds.","session-name":{"title":"Testing Edge Functions","slug":"testing-edge-functions"}}"#
         );
         Ok(())
     }

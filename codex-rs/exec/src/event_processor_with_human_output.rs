@@ -16,6 +16,7 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_core::protocol::SessionRenamedEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TurnAbortReason;
@@ -206,6 +207,14 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "{}\n{}",
                     "codex".style(self.italic).style(self.magenta),
                     message,
+                );
+            }
+            EventMsg::SessionRenamed(SessionRenamedEvent { name, .. }) => {
+                ts_msg!(
+                    self,
+                    "{} {}",
+                    "session renamed to".style(self.dimmed),
+                    name.title.style(self.bold)
                 );
             }
             EventMsg::SessionTerminated(_) => {
@@ -435,11 +444,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 let SessionConfiguredEvent {
                     session_id: conversation_id,
                     model,
-                    reasoning_effort: _,
-                    history_log_id: _,
-                    history_entry_count: _,
-                    initial_messages: _,
-                    rollout_path: _,
+                    ..
                 } = session_configured_event;
 
                 ts_msg!(

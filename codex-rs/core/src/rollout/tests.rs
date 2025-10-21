@@ -16,10 +16,12 @@ use crate::rollout::INTERACTIVE_SESSION_SOURCES;
 use crate::rollout::list::ConversationItem;
 use crate::rollout::list::ConversationsPage;
 use crate::rollout::list::Cursor;
+use crate::rollout::list::find_conversation_paths_by_name;
 use crate::rollout::list::get_conversation;
 use crate::rollout::list::get_conversations;
 use anyhow::Result;
 use codex_protocol::ConversationId;
+use crate::session_name::make_session_name;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
@@ -40,6 +42,7 @@ fn write_session_file(
     uuid: Uuid,
     num_records: usize,
     source: Option<SessionSource>,
+    session_name: Option<&str>,
 ) -> std::io::Result<(OffsetDateTime, Uuid)> {
     let format: &[FormatItem] =
         format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
@@ -68,6 +71,13 @@ fn write_session_file(
 
     if let Some(source) = source {
         payload["source"] = serde_json::to_value(source).unwrap();
+    }
+    if let Some(name) = session_name {
+        let session_name = make_session_name(name).unwrap();
+        payload["name"] = serde_json::json!({
+            "title": session_name.title,
+            "slug": session_name.slug,
+        });
     }
 
     let meta = serde_json::json!({
@@ -116,6 +126,7 @@ async fn test_list_conversations_latest_first() {
         u1,
         3,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -124,6 +135,7 @@ async fn test_list_conversations_latest_first() {
         u2,
         3,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -132,6 +144,7 @@ async fn test_list_conversations_latest_first() {
         u3,
         3,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
 
@@ -198,6 +211,7 @@ async fn test_list_conversations_latest_first() {
                 tail: Vec::new(),
                 created_at: Some("2025-01-03T12-00-00".into()),
                 updated_at: Some("2025-01-03T12-00-00".into()),
+                name: None,
             },
             ConversationItem {
                 path: p2,
@@ -205,6 +219,7 @@ async fn test_list_conversations_latest_first() {
                 tail: Vec::new(),
                 created_at: Some("2025-01-02T12-00-00".into()),
                 updated_at: Some("2025-01-02T12-00-00".into()),
+                name: None,
             },
             ConversationItem {
                 path: p3,
@@ -212,6 +227,7 @@ async fn test_list_conversations_latest_first() {
                 tail: Vec::new(),
                 created_at: Some("2025-01-01T12-00-00".into()),
                 updated_at: Some("2025-01-01T12-00-00".into()),
+                name: None,
             },
         ],
         next_cursor: Some(expected_cursor),
@@ -241,6 +257,7 @@ async fn test_pagination_cursor() {
         u1,
         1,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -249,6 +266,7 @@ async fn test_pagination_cursor() {
         u2,
         1,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -257,6 +275,7 @@ async fn test_pagination_cursor() {
         u3,
         1,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -265,6 +284,7 @@ async fn test_pagination_cursor() {
         u4,
         1,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -273,6 +293,7 @@ async fn test_pagination_cursor() {
         u5,
         1,
         Some(SessionSource::VSCode),
+        None,
     )
     .unwrap();
 
@@ -319,6 +340,7 @@ async fn test_pagination_cursor() {
                 tail: Vec::new(),
                 created_at: Some("2025-03-05T09-00-00".into()),
                 updated_at: Some("2025-03-05T09-00-00".into()),
+                name: None,
             },
             ConversationItem {
                 path: p4,
@@ -326,6 +348,7 @@ async fn test_pagination_cursor() {
                 tail: Vec::new(),
                 created_at: Some("2025-03-04T09-00-00".into()),
                 updated_at: Some("2025-03-04T09-00-00".into()),
+                name: None,
             },
         ],
         next_cursor: Some(expected_cursor1.clone()),
@@ -382,6 +405,7 @@ async fn test_pagination_cursor() {
                 tail: Vec::new(),
                 created_at: Some("2025-03-03T09-00-00".into()),
                 updated_at: Some("2025-03-03T09-00-00".into()),
+                name: None,
             },
             ConversationItem {
                 path: p2,
@@ -389,6 +413,7 @@ async fn test_pagination_cursor() {
                 tail: Vec::new(),
                 created_at: Some("2025-03-02T09-00-00".into()),
                 updated_at: Some("2025-03-02T09-00-00".into()),
+                name: None,
             },
         ],
         next_cursor: Some(expected_cursor2.clone()),
@@ -429,6 +454,7 @@ async fn test_pagination_cursor() {
             tail: Vec::new(),
             created_at: Some("2025-03-01T09-00-00".into()),
             updated_at: Some("2025-03-01T09-00-00".into()),
+            name: None,
         }],
         next_cursor: Some(expected_cursor3),
         num_scanned_files: 5, // scanned 05, 04 (anchor), 03, 02 (anchor), 01
@@ -444,7 +470,7 @@ async fn test_get_conversation_contents() {
 
     let uuid = Uuid::new_v4();
     let ts = "2025-04-01T10-30-00";
-    write_session_file(home, ts, uuid, 2, Some(SessionSource::VSCode)).unwrap();
+    write_session_file(home, ts, uuid, 2, Some(SessionSource::VSCode), None).unwrap();
 
     let page = get_conversations(home, 1, None, INTERACTIVE_SESSION_SOURCES)
         .await
@@ -477,6 +503,7 @@ async fn test_get_conversation_contents() {
             tail: Vec::new(),
             created_at: Some(ts.into()),
             updated_at: Some(ts.into()),
+            name: None,
         }],
         next_cursor: Some(expected_cursor),
         num_scanned_files: 1,
@@ -533,6 +560,7 @@ async fn test_tail_includes_last_response_items() -> Result<()> {
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
+                name: None,
             },
             git: None,
         }),
@@ -617,6 +645,7 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
+                name: None,
             },
             git: None,
         }),
@@ -702,6 +731,7 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
+                name: None,
             },
             git: None,
         }),
@@ -785,9 +815,9 @@ async fn test_stable_ordering_same_second_pagination() {
     let u2 = Uuid::from_u128(2);
     let u3 = Uuid::from_u128(3);
 
-    write_session_file(home, ts, u1, 0, Some(SessionSource::VSCode)).unwrap();
-    write_session_file(home, ts, u2, 0, Some(SessionSource::VSCode)).unwrap();
-    write_session_file(home, ts, u3, 0, Some(SessionSource::VSCode)).unwrap();
+    write_session_file(home, ts, u1, 0, Some(SessionSource::VSCode), None).unwrap();
+    write_session_file(home, ts, u2, 0, Some(SessionSource::VSCode), None).unwrap();
+    write_session_file(home, ts, u3, 0, Some(SessionSource::VSCode), None).unwrap();
 
     let page1 = get_conversations(home, 2, None, INTERACTIVE_SESSION_SOURCES)
         .await
@@ -825,6 +855,7 @@ async fn test_stable_ordering_same_second_pagination() {
                 tail: Vec::new(),
                 created_at: Some(ts.to_string()),
                 updated_at: Some(ts.to_string()),
+                name: None,
             },
             ConversationItem {
                 path: p2,
@@ -832,6 +863,7 @@ async fn test_stable_ordering_same_second_pagination() {
                 tail: Vec::new(),
                 created_at: Some(ts.to_string()),
                 updated_at: Some(ts.to_string()),
+                name: None,
             },
         ],
         next_cursor: Some(expected_cursor1.clone()),
@@ -862,6 +894,7 @@ async fn test_stable_ordering_same_second_pagination() {
             tail: Vec::new(),
             created_at: Some(ts.to_string()),
             updated_at: Some(ts.to_string()),
+            name: None,
         }],
         next_cursor: Some(expected_cursor2),
         num_scanned_files: 3, // scanned u3, u2 (anchor), u1
@@ -884,6 +917,7 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         interactive_id,
         2,
         Some(SessionSource::Cli),
+        None,
     )
     .unwrap();
     write_session_file(
@@ -892,6 +926,7 @@ async fn test_source_filter_excludes_non_matching_sessions() {
         non_interactive_id,
         2,
         Some(SessionSource::Exec),
+        None,
     )
     .unwrap();
 
@@ -924,4 +959,53 @@ async fn test_source_filter_excludes_non_matching_sessions() {
     assert!(all_paths.iter().any(|path| {
         path.ends_with("rollout-2025-08-01T10-00-00-00000000-0000-0000-0000-00000000004d.jsonl")
     }));
+}
+
+#[tokio::test]
+async fn find_conversation_paths_by_session_name_matches_slug() -> Result<()> {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+
+    let peanuts_uuid = Uuid::from_u128(601);
+    write_session_file(
+        home,
+        "2025-09-01T10-00-00",
+        peanuts_uuid,
+        0,
+        Some(SessionSource::Cli),
+        Some("Peanuts"),
+    )?
+    .0;
+
+    let peanuts22_uuid = Uuid::from_u128(602);
+    write_session_file(
+        home,
+        "2025-09-02T10-00-00",
+        peanuts22_uuid,
+        0,
+        Some(SessionSource::Cli),
+        Some("Peanuts22"),
+    )?
+    .0;
+
+    let slug_matches = find_conversation_paths_by_name(home, "peanuts").await?;
+    assert_eq!(slug_matches.len(), 1);
+    let slug_file = slug_matches[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert!(slug_file.contains(&peanuts_uuid.to_string()));
+
+    let title_matches = find_conversation_paths_by_name(home, "Peanuts22").await?;
+    assert_eq!(title_matches.len(), 1);
+    let title_file = title_matches[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert!(title_file.contains(&peanuts22_uuid.to_string()));
+
+    let none = find_conversation_paths_by_name(home, "unknown").await?;
+    assert!(none.is_empty());
+
+    Ok(())
 }
