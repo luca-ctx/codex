@@ -313,6 +313,17 @@ impl Default for Notifications {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct Hooks {
+    #[serde(default, rename = "onAgentTurnFinished")]
+    pub on_agent_turn_finished: Option<HookCommand>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct HookCommand {
+    pub command: String,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Tui {

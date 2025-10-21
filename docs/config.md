@@ -797,6 +797,25 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `sandbox_workspace_write.exclude_slash_tmp`      | boolean                                                           | Exclude `/tmp` from writable roots (default: false).                                                                       |
 | `disable_response_storage`                       | boolean                                                           | Required for ZDR orgs.                                                                                                     |
 | `notify`                                         | array<string>                                                     | External program for notifications.                                                                                        |
+| `hooks.onAgentTurnFinished.command`              | string                                                            | Optional shell command to run after a turn ends in the chat widget (non-keep-going) or when the agent permanently terminates the session. |
+
+## hooks
+
+Codex can run simple shell hooks when key lifecycle events happen. Hooks live under the `[hooks]` table in `config.toml`.
+
+### onAgentTurnFinished
+
+The TUI chat widget can invoke an external command whenever an agent turn *fully* completes while keep-going mode is disabled. The hook also fires if the agent calls `permanently_terminate_session`.
+
+```toml
+[hooks.onAgentTurnFinished]
+command = "terminal-notifier 'turn finished'"
+```
+
+Codex executes the command using the platform shell (`sh -lc` on Unix, `cmd /C` on Windows). The command runs without additional arguments, so use shell quoting to pass options. If spawning fails, Codex logs a warning and continues operating.
+
+> [!NOTE]
+> `hooks.onAgentTurnFinished` is specific to the interactive chat widget session. For cross-environment automation or CI integrations, consider `notify`, which fires for every turn regardless of UI mode and provides a structured JSON payload.
 | `instructions`                                   | string                                                            | Currently ignored; use `experimental_instructions_file` or `AGENTS.md`.                                                    |
 | `mcp_servers.<id>.command`                       | string                                                            | MCP server launcher command (stdio servers only).                                                                          |
 | `mcp_servers.<id>.args`                          | array<string>                                                     | MCP server args (stdio servers only).                                                                                      |

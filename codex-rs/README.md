@@ -41,7 +41,7 @@ Use `codex mcp` to add/list/get/remove MCP server launchers defined in `config.t
 
 ### Notifications
 
-You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](../docs/config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS.
+You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](../docs/config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS. For chat-widget–specific automation (for example, a one-line shell command after Codex finishes a turn while keep-going is disabled), configure [`hooks.onAgentTurnFinished`](../docs/config.md#onagentturnfinished).
 
 ### `codex exec` to run Codex programmatically/non-interactively
 

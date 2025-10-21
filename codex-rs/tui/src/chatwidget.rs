@@ -83,6 +83,8 @@ use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
+use crate::hook_runner::TurnFinishedHookRunner;
+use crate::hook_runner::default_turn_finished_hook_runner;
 use crate::markdown::append_markdown;
 use crate::render::renderable::ColumnRenderable;
 use crate::slash_command::SlashCommand;
@@ -220,6 +222,7 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) initial_images: Vec<PathBuf>,
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) turn_finished_hook_runner: Option<Arc<dyn TurnFinishedHookRunner>>,
 }
 
 pub(crate) struct ChatWidget {
@@ -268,6 +271,10 @@ pub(crate) struct ChatWidget {
     ghost_snapshots_disabled: bool,
     // Whether to add a final message separator after the last message
     needs_final_message_separator: bool,
+    // Hook configuration for notifying when a turn truly completes.
+    turn_finished_hook_command: Option<String>,
+    turn_finished_hook_runner: Arc<dyn TurnFinishedHookRunner>,
+    turn_started_since_last_hook: bool,
 
     last_rendered_width: std::cell::Cell<Option<usize>>,
 }
@@ -319,6 +326,17 @@ impl ChatWidget {
         }
         self.current_status_header = header.clone();
         self.bottom_pane.update_status_header(header);
+    }
+
+    fn invoke_turn_finished_hook(&mut self) {
+        if !self.turn_started_since_last_hook {
+            return;
+        }
+        self.turn_started_since_last_hook = false;
+        let Some(command) = self.turn_finished_hook_command.as_deref() else {
+            return;
+        };
+        self.turn_finished_hook_runner.run(command);
     }
 
     // --- Small event handlers ---
@@ -402,6 +420,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     fn on_task_started(&mut self) {
+        self.turn_started_since_last_hook = true;
         self.bottom_pane.clear_ctrl_c_quit_hint();
         self.bottom_pane.set_task_running(true);
         self.retry_status_header = None;
@@ -438,6 +457,10 @@ impl ChatWidget {
         self.notify(Notification::AgentTurnComplete {
             response: last_agent_message.unwrap_or_default(),
         });
+
+        if self.queued_user_messages.is_empty() && !self.keep_going_mode {
+            self.invoke_turn_finished_hook();
+        }
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -493,6 +516,7 @@ impl ChatWidget {
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
         self.stream_controller = None;
+        self.turn_started_since_last_hook = false;
     }
 
     fn on_error(&mut self, message: String) {
@@ -928,10 +952,14 @@ impl ChatWidget {
             initial_images,
             enhanced_keys_supported,
             auth_manager,
+            turn_finished_hook_runner,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
+        let turn_finished_hook_runner =
+            turn_finished_hook_runner.unwrap_or_else(default_turn_finished_hook_runner);
+        let turn_finished_hook_command = config.on_agent_turn_finished_command().map(str::to_owned);
 
         Self {
             app_event_tx: app_event_tx.clone(),
@@ -974,6 +1002,9 @@ impl ChatWidget {
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
+            turn_finished_hook_command,
+            turn_finished_hook_runner,
+            turn_started_since_last_hook: false,
             last_rendered_width: std::cell::Cell::new(None),
         }
     }
@@ -992,12 +1023,16 @@ impl ChatWidget {
             initial_images,
             enhanced_keys_supported,
             auth_manager,
+            turn_finished_hook_runner,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
+        let turn_finished_hook_runner =
+            turn_finished_hook_runner.unwrap_or_else(default_turn_finished_hook_runner);
+        let turn_finished_hook_command = config.on_agent_turn_finished_command().map(str::to_owned);
 
         Self {
             app_event_tx: app_event_tx.clone(),
@@ -1040,6 +1075,9 @@ impl ChatWidget {
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
+            turn_finished_hook_command,
+            turn_finished_hook_runner,
+            turn_started_since_last_hook: false,
             last_rendered_width: std::cell::Cell::new(None),
         }
     }
@@ -1398,6 +1436,7 @@ impl ChatWidget {
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::SessionTerminated(ev) => {
+                self.invoke_turn_finished_hook();
                 self.keep_going_mode = false;
                 self.add_to_history(history_cell::new_info_event(ev.message, None));
                 self.request_redraw();

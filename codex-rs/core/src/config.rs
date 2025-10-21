@@ -5,6 +5,7 @@ use crate::config_loader::merge_toml_values;
 use crate::config_profile::ConfigProfile;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config_types::History;
+use crate::config_types::Hooks;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
 use crate::config_types::Notifications;
@@ -138,6 +139,9 @@ pub struct Config {
     ///
     /// If unset the feature is disabled.
     pub notify: Option<Vec<String>>,
+
+    /// Lifecycle hooks triggered by specific agent actions.
+    pub hooks: Hooks,
 
     /// TUI notifications preference. When set, the TUI will send OSC 9 notifications on approvals
     /// and turn completions when not focused.
@@ -738,6 +742,10 @@ pub struct ConfigToml {
     #[serde(default)]
     pub notify: Option<Vec<String>>,
 
+    /// Lifecycle hooks triggered by specific agent actions.
+    #[serde(default)]
+    pub hooks: Hooks,
+
     /// System instructions.
     pub instructions: Option<String>,
 
@@ -1148,6 +1156,7 @@ impl Config {
             sandbox_policy,
             shell_environment_policy,
             notify: cfg.notify,
+            hooks: cfg.hooks,
             user_instructions,
             base_instructions,
             mcp_servers: cfg.mcp_servers,
@@ -1237,6 +1246,13 @@ impl Config {
             }
         }
         None
+    }
+
+    pub fn on_agent_turn_finished_command(&self) -> Option<&str> {
+        self.hooks
+            .on_agent_turn_finished
+            .as_ref()
+            .map(|hook| hook.command.as_str())
     }
 
     fn get_base_instructions(
@@ -2224,6 +2240,7 @@ model_verbosity = "high"
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
                 user_instructions: None,
                 notify: None,
+                hooks: Hooks::default(),
                 cwd: fixture.cwd(),
                 mcp_servers: HashMap::new(),
                 mcp_oauth_credentials_store_mode: Default::default(),
@@ -2261,6 +2278,35 @@ model_verbosity = "high"
     }
 
     #[test]
+    fn hooks_section_parses_turn_finished_command() -> anyhow::Result<()> {
+        let toml = r#"
+[hooks.onAgentTurnFinished]
+command = "terminal-notifier 'turn finished'"
+"#;
+        let temp_home = tempfile::TempDir::new()?;
+        let parsed: ConfigToml = toml::from_str(toml)?;
+        assert_eq!(
+            parsed.hooks.on_agent_turn_finished,
+            Some(crate::config_types::HookCommand {
+                command: "terminal-notifier 'turn finished'".to_string(),
+            })
+        );
+
+        let config = Config::load_from_base_config_with_overrides(
+            parsed,
+            ConfigOverrides::default(),
+            temp_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.on_agent_turn_finished_command(),
+            Some("terminal-notifier 'turn finished'")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         let fixture = create_test_fixture()?;
 
@@ -2288,6 +2334,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: Hooks::default(),
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),
@@ -2367,6 +2414,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: Hooks::default(),
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),
@@ -2432,6 +2480,7 @@ model_verbosity = "high"
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
+            hooks: Hooks::default(),
             cwd: fixture.cwd(),
             mcp_servers: HashMap::new(),
             mcp_oauth_credentials_store_mode: Default::default(),

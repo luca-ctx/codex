@@ -1,6 +1,7 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+use crate::hook_runner::default_turn_finished_hook_runner;
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
@@ -10,6 +11,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
 use codex_core::config::OPENAI_DEFAULT_MODEL;
+use codex_core::config_types::HookCommand;
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
@@ -31,6 +33,7 @@ use codex_core::protocol::ReviewFinding;
 use codex_core::protocol::ReviewLineRange;
 use codex_core::protocol::ReviewOutputEvent;
 use codex_core::protocol::ReviewRequest;
+use codex_core::protocol::SessionTerminatedEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
@@ -48,6 +51,8 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use tempfile::NamedTempFile;
 use tempfile::tempdir;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -234,10 +239,72 @@ async fn helpers_are_available_and_do_not_panic() {
         initial_images: Vec::new(),
         enhanced_keys_supported: false,
         auth_manager,
+        turn_finished_hook_runner: None,
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
     let _ = &mut w;
+}
+
+#[test]
+fn turn_finished_hook_runs_on_task_complete() {
+    let (mut chat, runner, _rx, _op_rx) =
+        make_chatwidget_with_hook("terminal-notifier 'turn finished'");
+    chat.on_task_started();
+    chat.on_task_complete(Some("done".to_string()));
+
+    assert_eq!(
+        runner.invocations(),
+        vec!["terminal-notifier 'turn finished'".to_string()]
+    );
+}
+
+#[test]
+fn turn_finished_hook_skips_when_keep_going_enabled() {
+    let (mut chat, runner, _rx, _op_rx) =
+        make_chatwidget_with_hook("terminal-notifier 'turn finished'");
+    chat.keep_going_mode = true;
+    chat.on_task_started();
+    chat.on_task_complete(None);
+
+    assert!(runner.invocations().is_empty());
+}
+
+#[test]
+fn turn_finished_hook_runs_on_session_termination() {
+    let (mut chat, runner, _rx, _op_rx) =
+        make_chatwidget_with_hook("terminal-notifier 'turn finished'");
+    chat.on_task_started();
+    chat.handle_codex_event(Event {
+        id: "term".into(),
+        msg: EventMsg::SessionTerminated(SessionTerminatedEvent {
+            message: "terminated".to_string(),
+        }),
+    });
+
+    assert_eq!(
+        runner.invocations(),
+        vec!["terminal-notifier 'turn finished'".to_string()]
+    );
+}
+
+#[test]
+fn turn_finished_hook_fires_only_once_for_complete_then_terminate() {
+    let (mut chat, runner, _rx, _op_rx) =
+        make_chatwidget_with_hook("terminal-notifier 'turn finished'");
+    chat.on_task_started();
+    chat.on_task_complete(None);
+    chat.handle_codex_event(Event {
+        id: "term".into(),
+        msg: EventMsg::SessionTerminated(SessionTerminatedEvent {
+            message: "terminated".to_string(),
+        }),
+    });
+
+    assert_eq!(
+        runner.invocations(),
+        vec!["terminal-notifier 'turn finished'".to_string()]
+    );
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
@@ -290,6 +357,9 @@ fn make_chatwidget_manual() -> (
         ghost_snapshots: Vec::new(),
         ghost_snapshots_disabled: false,
         needs_final_message_separator: false,
+        turn_finished_hook_command: None,
+        turn_finished_hook_runner: default_turn_finished_hook_runner(),
+        turn_started_since_last_hook: false,
         last_rendered_width: std::cell::Cell::new(None),
     };
     (widget, rx, op_rx)
@@ -304,6 +374,47 @@ pub(crate) fn make_chatwidget_manual_with_sender() -> (
     let (widget, rx, op_rx) = make_chatwidget_manual();
     let app_event_tx = widget.app_event_tx.clone();
     (widget, app_event_tx, rx, op_rx)
+}
+
+#[derive(Default)]
+struct TestHookRunner {
+    invocations: Mutex<Vec<String>>,
+}
+
+impl crate::hook_runner::TurnFinishedHookRunner for TestHookRunner {
+    fn run(&self, command: &str) {
+        self.invocations
+            .lock()
+            .expect("lock hook invocations")
+            .push(command.to_string());
+    }
+}
+
+impl TestHookRunner {
+    fn invocations(&self) -> Vec<String> {
+        self.invocations
+            .lock()
+            .expect("lock hook invocations")
+            .clone()
+    }
+}
+
+fn make_chatwidget_with_hook(
+    command: &str,
+) -> (
+    ChatWidget,
+    Arc<TestHookRunner>,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
+    let (mut widget, rx, op_rx) = make_chatwidget_manual();
+    widget.turn_finished_hook_command = Some(command.to_string());
+    widget.config.hooks.on_agent_turn_finished = Some(HookCommand {
+        command: command.to_string(),
+    });
+    let runner = Arc::new(TestHookRunner::default());
+    widget.turn_finished_hook_runner = runner.clone();
+    (widget, runner, rx, op_rx)
 }
 
 fn drain_insert_history(

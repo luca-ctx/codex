@@ -109,6 +109,7 @@ impl App {
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
+                    turn_finished_hook_runner: None,
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -131,6 +132,7 @@ impl App {
                     initial_images: initial_images.clone(),
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
+                    turn_finished_hook_runner: None,
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -235,6 +237,7 @@ impl App {
                     initial_images: Vec::new(),
                     enhanced_keys_supported: self.enhanced_keys_supported,
                     auth_manager: self.auth_manager.clone(),
+                    turn_finished_hook_runner: None,
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 tui.frame_requester().schedule_frame();

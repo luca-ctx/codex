@@ -339,6 +339,7 @@ impl App {
             initial_images: Vec::new(),
             enhanced_keys_supported: self.enhanced_keys_supported,
             auth_manager: self.auth_manager.clone(),
+            turn_finished_hook_runner: None,
         };
         self.chat_widget =
             crate::chatwidget::ChatWidget::new_from_existing(init, conv, session_configured);
