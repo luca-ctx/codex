@@ -425,7 +425,7 @@ impl ChatWidget {
         } else if self.keep_going_mode {
             // Otherwise, if keep‑going mode is enabled, automatically continue.
             let continuation_message =
-                "Please continue working on this task. Keep going with your current approach."
+                "Please continue working on this task. Keep going with your current approach. When you're done with absolutely everything and nothing is left to do, invoke `permanently_terminate_session`."
                     .to_string();
             let user_message = UserMessage {
                 text: continuation_message,
