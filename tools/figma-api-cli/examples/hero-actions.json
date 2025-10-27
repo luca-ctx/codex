@@ -1,0 +1,150 @@
+{
+  "payload": {
+    "description": "Declarative hero section layout",
+    "actions": [
+      {
+        "kind": "set-page",
+        "name": "Automation Playground"
+      },
+      {
+        "kind": "create-frame",
+        "name": "Hero Frame",
+        "width": 1440,
+        "height": 900,
+        "layoutMode": "VERTICAL",
+        "paddingTop": 96,
+        "paddingBottom": 96,
+        "paddingLeft": 160,
+        "paddingRight": 160,
+        "itemSpacing": 48,
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.95,
+              "g": 0.97,
+              "b": 1.0
+            }
+          }
+        ]
+      },
+      {
+        "kind": "create-text",
+        "parentNodeId": "#Hero Frame",
+        "characters": "Profound Care, Powered by AI",
+        "fontSize": 72,
+        "textAlignHorizontal": "CENTER",
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.12,
+              "g": 0.17,
+              "b": 0.32
+            }
+          }
+        ]
+      },
+      {
+        "kind": "create-text",
+        "parentNodeId": "#Hero Frame",
+        "characters": "Integrated behavioral and cardiometabolic care in one connected journey.",
+        "fontSize": 28,
+        "textAlignHorizontal": "CENTER",
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.24,
+              "g": 0.28,
+              "b": 0.38
+            }
+          }
+        ]
+      },
+      {
+        "kind": "create-frame",
+        "name": "CTA Row",
+        "parentNodeId": "#Hero Frame",
+        "layoutMode": "HORIZONTAL",
+        "primaryAxisSizingMode": "AUTO",
+        "counterAxisSizingMode": "AUTO",
+        "itemSpacing": 24,
+        "padding": 0,
+        "fills": []
+      },
+      {
+        "kind": "create-rectangle",
+        "name": "Primary CTA",
+        "parentNodeId": "#CTA Row",
+        "width": 240,
+        "height": 64,
+        "cornerRadius": 16,
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.18,
+              "g": 0.36,
+              "b": 0.92
+            }
+          }
+        ]
+      },
+      {
+        "kind": "create-text",
+        "parentNodeId": "@last",
+        "characters": "Get Started",
+        "fontSize": 24,
+        "textAlignHorizontal": "CENTER",
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0
+            }
+          }
+        ]
+      },
+      {
+        "kind": "create-rectangle",
+        "name": "Secondary CTA",
+        "parentNodeId": "#CTA Row",
+        "width": 240,
+        "height": 64,
+        "cornerRadius": 16,
+        "strokes": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.18,
+              "g": 0.36,
+              "b": 0.92
+            }
+          }
+        ],
+        "strokeWeight": 4,
+        "fills": []
+      },
+      {
+        "kind": "create-text",
+        "parentNodeId": "@last",
+        "characters": "Learn More",
+        "fontSize": 24,
+        "textAlignHorizontal": "CENTER",
+        "fills": [
+          {
+            "type": "SOLID",
+            "color": {
+              "r": 0.18,
+              "g": 0.36,
+              "b": 0.92
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

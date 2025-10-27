@@ -131,6 +131,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 
+pub(crate) mod cleaner;
 pub(crate) mod compact;
 
 /// The high-level interface to the Codex system.
@@ -621,11 +622,15 @@ impl Session {
         self.session_name.lock().await.clone()
     }
 
-    fn next_internal_sub_id(&self) -> String {
+    pub(crate) fn next_internal_sub_id_with_prefix(&self, prefix: &str) -> String {
         let id = self
             .next_internal_sub_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        format!("auto-compact-{id}")
+        format!("{prefix}{id}")
+    }
+
+    fn next_internal_sub_id(&self) -> String {
+        self.next_internal_sub_id_with_prefix("auto-compact-")
     }
 
     async fn record_initial_history(
@@ -904,6 +909,20 @@ impl Session {
             }
             self.send_token_count_event(sub_id).await;
         }
+    }
+
+    pub(crate) async fn context_usage_percent(&self) -> Option<f64> {
+        let (info, _) = {
+            let state = self.state.lock().await;
+            state.token_info_and_rate_limits()
+        };
+        let info = info?;
+        let window = info.model_context_window?;
+        if window == 0 {
+            return None;
+        }
+        let usage = info.total_token_usage.total_tokens as f64;
+        Some((usage / window as f64) * 100.0)
     }
 
     /// Record a user input item to conversation history and also persist a
@@ -1778,6 +1797,7 @@ pub(crate) async fn run_task(
     }
 
     let mut last_agent_message: Option<String> = None;
+    let mut turn_completed = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -1984,6 +2004,7 @@ pub(crate) async fn run_task(
                     last_agent_message = get_last_assistant_message_from_turn(
                         &items_to_record_in_conversation_history,
                     );
+                    turn_completed = true;
                     sess.notifier()
                         .notify(&UserNotification::AgentTurnComplete {
                             thread_id: sess.conversation_id.to_string(),
@@ -2028,6 +2049,11 @@ pub(crate) async fn run_task(
                 break;
             }
         }
+    }
+
+    if turn_completed {
+        cleaner::maybe_run_context_cleaner(Arc::clone(&sess), Arc::clone(&turn_context), &sub_id)
+            .await;
     }
 
     // If this was a review thread and we have a final assistant message,

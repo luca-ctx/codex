@@ -1,0 +1,18 @@
+{
+  "name": "@icp/figma-automation-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Profound Health automation plugin enabling scripted Figma design creation.",
+  "type": "module",
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "pnpm run clean && tsc -p tsconfig.json && cp src/ui.html dist/ui.html && cp src/manifest.json dist/manifest.json",
+    "prepare": "pnpm run build"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.105.0",
+    "@types/node": "catalog:",
+    "rimraf": "catalog:",
+    "typescript": "catalog:"
+  }
+}

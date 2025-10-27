@@ -40,6 +40,14 @@ If you need to write any temporary files in the repo workspace for throwaway pur
 
 When I start you out on a task, please do as much work towards it as you can. Eventually your turn will end, and then I will send an automated message to send you back into the loop. This will continue until you call the tool to permanently end the session. Don't call this function until you are absolutely done with everything and there is nothing left you could do on your task (such as reviewing your code, making sure tests pass, making sure a manual QA pass over the functionality works, additional cleanup from your work, etc).
 
+Before handing off completed work, run `request_code_review` (or delegate to a codex review agent) so we keep the automated review loop tight.
+
+# Agent-level tools
+
+- When keep-going (continue) mode is active, only end the session by calling the `permanently_terminate_session` tool once nothing remains to fix or improve.
+- Use `request_code_review` to spin up a reviewer before handoff; feel free to pass a plan or explicit scope.
+- Reach for the MCP `codex-batch` tool (and follow up with `codex-reply`) when you want to fan out multiple Codex sub-sessions in parallel.
+
 # Working with Other AI Agents in a Dirty Workspace
 
 You should assume that there are other AI coding agents working concurrently with you (or a human developer) in the same git workspace. If you see changes in `git diff` that are unrelated to your work, please don't try to reset them. They are probably from other work that is ongoing (especially as related to other exec_plans).
@@ -55,3 +63,20 @@ You have the following MCP tools available at your disposal:
 • Tools: codex, codex-reply, codex-code-review, codex-batch
 
 Using codex is really great when you want to farm of a well-contained task. You should be mindful of your own context window. You can use codex to do a one-off change. Think of this like delegating to an engineer on your team. You are the tech lead and you need to provide a good prompt and clear instructions on when to escalate back to you for further assistance. You can also use a codex sub-agent to perform a code review for you. Just give it proper context on what you did and why. If you want to continue a conversation with the same sub-agent, just use codex-reply. Also, whenever you finish a major milestone or a full task, use codex-code-review to have an AI code review agent check your work. You'll have to provide a clear message as to what you were working on and why. Ideally, you should provide a message that contains a list of files you touched so the agent can focus on those. There may be other concurrent tasks by other AI coding agents on the same git worktree. So if you get back irrelevant content in the code review response, you can safely ignore it. Codex batch is great for farming off many tasks to several subagents at once.
+
+## Continuous Context Cleaner
+
+- Disabled by default; enable via `config.toml`:
+  ```toml
+  [context.cleaner]
+  enabled = true
+  # Optional overrides (defaults shown):
+  min_usage_percent = 55      # run once this % of context is consumed
+  max_history_items = 120     # cap entries inspected each pass
+  max_item_bytes = 4096       # truncate individual entry previews
+  max_removals_per_turn = 3   # maximum deletions per turn
+  protected_tail_items = 6    # always keep the freshest turn data
+  ```
+- Runs after non-review turns once the usage threshold is crossed. It only proposes removals for entries marked `removable: yes` (mostly shell/stdout noise) and will safely no-op if nothing is obvious.
+- The cleaner never touches human messages, instructions, specs, or the protected tail. Removals are conservative and logged via background events; the cleaner may emit a short agent summary when it actually trims content.
+- Pair this with auto-compaction for long missions. Start with default safeguards, validate the summaries, and only lower thresholds if you are comfortable with the removal behaviour.

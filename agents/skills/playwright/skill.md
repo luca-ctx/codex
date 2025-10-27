@@ -299,6 +299,7 @@ For comprehensive Playwright API documentation, see [API_REFERENCE.md](API_REFER
 - **Use /tmp for test files** - Write to `/tmp/playwright-test-*.js`, never to skill directory or user's project
 - **Parameterize URLs** - Put detected/provided URL in a `TARGET_URL` constant at the top of every script
 - **DEFAULT: Visible browser** - Always use `headless: false` unless user explicitly asks for headless mode
+- **Prefer locator screenshots** - When you need close-up shots, call `await page.locator('selector').screenshot({ path })` instead of cropping a full-page image; this keeps native resolution and avoids interpolation artifacts
 - **Headless mode** - Only use `headless: true` when user specifically requests "headless" or "background" execution
 - **Slow down:** Use `slowMo: 100` to make actions visible and easier to follow
 - **Wait strategies:** Use `waitForURL`, `waitForSelector`, `waitForLoadState` instead of fixed timeouts

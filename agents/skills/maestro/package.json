@@ -1,0 +1,9 @@
+{
+  "name": "maestro-skill",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Local tooling for the Maestro skill executor",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "dependencies": {}
+}

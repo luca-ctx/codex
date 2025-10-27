@@ -3,6 +3,8 @@ pub use crate::config_loader::load_config_as_toml;
 use crate::config_loader::load_config_layers_with_overrides;
 use crate::config_loader::merge_toml_values;
 use crate::config_profile::ConfigProfile;
+use crate::config_types::ContextCleanerConfig;
+use crate::config_types::ContextConfigToml;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config_types::History;
 use crate::config_types::Hooks;
@@ -184,6 +186,9 @@ pub struct Config {
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
     pub history: History,
+
+    /// Controls for the continuous context cleaner feature.
+    pub context_cleaner: ContextCleanerConfig,
 
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
@@ -790,6 +795,9 @@ pub struct ConfigToml {
     #[serde(default)]
     pub history: Option<History>,
 
+    #[serde(default)]
+    pub context: Option<ContextConfigToml>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -1093,6 +1101,10 @@ impl Config {
         };
 
         let history = cfg.history.unwrap_or_default();
+        let context_cleaner = cfg
+            .context
+            .and_then(|ctx| ctx.cleaner.map(ContextCleanerConfig::from))
+            .unwrap_or_default();
 
         let include_plan_tool_flag = features.enabled(Feature::PlanTool);
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
@@ -1195,6 +1207,7 @@ impl Config {
                 .collect(),
             codex_home,
             history,
+            context_cleaner,
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             codex_linux_sandbox_exe,
 
@@ -2266,6 +2279,7 @@ model_verbosity = "high"
                 project_doc_fallback_filenames: Vec::new(),
                 codex_home: fixture.codex_home(),
                 history: History::default(),
+                context_cleaner: ContextCleanerConfig::default(),
                 file_opener: UriBasedFileOpener::VsCode,
                 codex_linux_sandbox_exe: None,
                 hide_agent_reasoning: false,
@@ -2361,6 +2375,7 @@ command = "terminal-notifier 'turn finished'"
             project_doc_fallback_filenames: Vec::new(),
             codex_home: fixture.codex_home(),
             history: History::default(),
+            context_cleaner: ContextCleanerConfig::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
             hide_agent_reasoning: false,
@@ -2442,6 +2457,7 @@ command = "terminal-notifier 'turn finished'"
             project_doc_fallback_filenames: Vec::new(),
             codex_home: fixture.codex_home(),
             history: History::default(),
+            context_cleaner: ContextCleanerConfig::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
             hide_agent_reasoning: false,
@@ -2509,6 +2525,7 @@ command = "terminal-notifier 'turn finished'"
             project_doc_fallback_filenames: Vec::new(),
             codex_home: fixture.codex_home(),
             history: History::default(),
+            context_cleaner: ContextCleanerConfig::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
             hide_agent_reasoning: false,

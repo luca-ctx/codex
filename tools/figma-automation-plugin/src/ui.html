@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Profound Automation Runner</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: transparent;
+        color: #fafafa;
+      }
+    </style>
+    <script>
+      const JOB_KEY = "phAutomationJob";
+      const RESULT_KEY = "phAutomationResult";
+
+      function postToPlugin(message) {
+        parent.postMessage({ pluginMessage: message }, "*");
+      }
+
+      function log(message) {
+        console.log(`[ph-automation-ui] ${message}`);
+      }
+
+      function safeParse(json) {
+        if (!json) return null;
+        try {
+          return JSON.parse(json);
+        } catch (error) {
+          log(`Failed to parse automation payload: ${error.message}`);
+          return null;
+        }
+      }
+
+      function readJobFromStorage() {
+        try {
+          const storage =
+            (window.top && window.top.localStorage) ||
+            (window.parent && window.parent.localStorage) ||
+            window.localStorage;
+          if (!storage) {
+            log("Unable to access localStorage on top frame.");
+            return null;
+          }
+          const raw = storage.getItem(JOB_KEY);
+          return safeParse(raw);
+        } catch (error) {
+          log(`localStorage access failed: ${error.message}`);
+          return null;
+        }
+      }
+
+      function writeResultToStorage(result) {
+        try {
+          const storage =
+            (window.top && window.top.localStorage) ||
+            (window.parent && window.parent.localStorage) ||
+            window.localStorage;
+          if (!storage) {
+            log("Unable to access localStorage to persist result.");
+            return;
+          }
+          storage.setItem(RESULT_KEY, JSON.stringify(result));
+        } catch (error) {
+          log(`Failed to persist result: ${error.message}`);
+        }
+      }
+
+      window.addEventListener("message", (event) => {
+        const message = event.data && event.data.pluginMessage;
+        if (!message || typeof message !== "object") {
+          return;
+        }
+        if (message.type === "request-job") {
+          const job = readJobFromStorage();
+          postToPlugin({ type: "automation-job", job });
+        } else if (message.type === "automation-result") {
+          writeResultToStorage(message.result);
+          log("Automation completed.");
+        }
+      });
+
+      // When the iframe mounts, immediately send job payload if present so the plugin
+      // does not rely solely on the command palette request.
+      window.addEventListener("DOMContentLoaded", () => {
+        const job = readJobFromStorage();
+        postToPlugin({ type: "automation-job", job });
+      });
+    </script>
+  </head>
+  <body>
+    Automation bridge ready.
+  </body>
+</html>

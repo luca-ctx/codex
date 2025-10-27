@@ -1,0 +1,21 @@
+{
+  "extends": "../typescript-config/base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "target": "es2019",
+    "lib": ["es2019"],
+    "types": ["@figma/plugin-typings"],
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "allowJs": false
+  },
+  "include": ["src/**/*.ts"]
+}

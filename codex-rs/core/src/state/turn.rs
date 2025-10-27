@@ -32,6 +32,7 @@ pub(crate) enum TaskKind {
     Regular,
     Review,
     Compact,
+    Cleaner,
 }
 
 impl TaskKind {
@@ -40,6 +41,7 @@ impl TaskKind {
             TaskKind::Regular => "standard",
             TaskKind::Review => "review",
             TaskKind::Compact => "compact",
+            TaskKind::Cleaner => "cleaner",
         }
     }
 }
@@ -133,5 +135,6 @@ mod tests {
         assert_eq!(TaskKind::Regular.header_value(), "standard");
         assert_eq!(TaskKind::Review.header_value(), "review");
         assert_eq!(TaskKind::Compact.header_value(), "compact");
+        assert_eq!(TaskKind::Cleaner.header_value(), "cleaner");
     }
 }

@@ -190,6 +190,75 @@ mod option_duration_secs {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ContextCleanerConfig {
+    pub enabled: bool,
+    pub min_usage_percent: u8,
+    pub max_history_items: usize,
+    pub max_item_bytes: usize,
+    pub max_removals_per_turn: usize,
+    pub protected_tail_items: usize,
+}
+
+impl Default for ContextCleanerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_usage_percent: 55,
+            max_history_items: 120,
+            max_item_bytes: 4_096,
+            max_removals_per_turn: 3,
+            protected_tail_items: 6,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextCleanerConfigToml {
+    pub enabled: Option<bool>,
+    pub min_usage_percent: Option<u8>,
+    pub max_history_items: Option<usize>,
+    pub max_item_bytes: Option<usize>,
+    pub max_removals_per_turn: Option<usize>,
+    pub protected_tail_items: Option<usize>,
+}
+
+impl From<ContextCleanerConfigToml> for ContextCleanerConfig {
+    fn from(toml: ContextCleanerConfigToml) -> Self {
+        let defaults = ContextCleanerConfig::default();
+        Self {
+            enabled: toml.enabled.unwrap_or(defaults.enabled),
+            min_usage_percent: toml
+                .min_usage_percent
+                .map(|value| value.clamp(0, 100))
+                .unwrap_or(defaults.min_usage_percent),
+            max_history_items: toml
+                .max_history_items
+                .filter(|value| *value > 0)
+                .unwrap_or(defaults.max_history_items),
+            max_item_bytes: toml
+                .max_item_bytes
+                .filter(|value| *value > 0)
+                .unwrap_or(defaults.max_item_bytes),
+            max_removals_per_turn: toml
+                .max_removals_per_turn
+                .filter(|value| *value > 0)
+                .unwrap_or(defaults.max_removals_per_turn),
+            protected_tail_items: toml
+                .protected_tail_items
+                .unwrap_or(defaults.protected_tail_items),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextConfigToml {
+    pub cleaner: Option<ContextCleanerConfigToml>,
+}
+
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
 pub enum UriBasedFileOpener {
     #[serde(rename = "vscode")]
