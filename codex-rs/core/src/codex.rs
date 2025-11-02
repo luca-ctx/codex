@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,6 +61,7 @@ use crate::exec_command::ExecSessionManager;
 use crate::exec_command::WriteStdinParams;
 use crate::executor::Executor;
 use crate::executor::ExecutorConfig;
+use crate::executor::errors::ExecError;
 use crate::executor::normalize_exec_result;
 use crate::features::Feature;
 use crate::make_session_name;
@@ -2312,55 +2314,12 @@ async fn try_run_turn(
     sub_id: &str,
     prompt: &Prompt,
 ) -> CodexResult<TurnRunResult> {
-    // call_ids that are part of this response.
-    let completed_call_ids = prompt
-        .input
-        .iter()
-        .filter_map(|ri| match ri {
-            ResponseItem::FunctionCallOutput { call_id, .. } => Some(call_id),
-            ResponseItem::LocalShellCall {
-                call_id: Some(call_id),
-                ..
-            } => Some(call_id),
-            ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    // call_ids that were pending but are not part of this response.
-    // This usually happens because the user interrupted the model before we responded to one of its tool calls
-    // and then the user sent a follow-up message.
-    let missing_calls = {
-        prompt
-            .input
-            .iter()
-            .filter_map(|ri| match ri {
-                ResponseItem::FunctionCall { call_id, .. } => Some(call_id),
-                ResponseItem::LocalShellCall {
-                    call_id: Some(call_id),
-                    ..
-                } => Some(call_id),
-                ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
-                _ => None,
-            })
-            .filter_map(|call_id| {
-                if completed_call_ids.contains(&call_id) {
-                    None
-                } else {
-                    Some(call_id.clone())
-                }
-            })
-            .map(|call_id| ResponseItem::CustomToolCallOutput {
-                call_id,
-                output: "aborted".to_string(),
-            })
-            .collect::<Vec<_>>()
-    };
-    let prompt: Cow<Prompt> = if missing_calls.is_empty() {
+    let synthesized = synthesize_missing_call_responses(&prompt.input);
+    let prompt: Cow<Prompt> = if synthesized.is_empty() {
         Cow::Borrowed(prompt)
     } else {
-        // Add the synthetic aborted missing calls to the beginning of the input to ensure all call ids have responses.
-        let input = [missing_calls, prompt.input.clone()].concat();
+        let mut input = prompt.input.clone();
+        apply_synthesized_outputs(&mut input, &synthesized);
         Cow::Owned(Prompt {
             input,
             ..prompt.clone()
@@ -2703,8 +2662,108 @@ pub(crate) async fn exit_review_mode(
         }])
         .await;
 }
+fn apply_synthesized_outputs(history: &mut Vec<ResponseItem>, synthesized: &[ResponseItem]) {
+    if synthesized.is_empty() {
+        return;
+    }
 
-use crate::executor::errors::ExecError;
+    let mut insertions: Vec<(usize, ResponseItem)> = Vec::with_capacity(synthesized.len());
+
+    for synth in synthesized {
+        match synth {
+            ResponseItem::FunctionCallOutput { call_id, .. } => {
+                let insert_at = history
+                    .iter()
+                    .enumerate()
+                    .rfind(|(_, item)| match item {
+                        ResponseItem::FunctionCall {
+                            call_id: existing, ..
+                        }
+                        | ResponseItem::LocalShellCall {
+                            call_id: Some(existing),
+                            ..
+                        } => existing == call_id,
+                        _ => false,
+                    })
+                    .map(|(idx, _)| idx + 1)
+                    .unwrap_or_else(|| history.len());
+                insertions.push((insert_at, synth.clone()));
+            }
+            ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                let insert_at = history
+                    .iter()
+                    .enumerate()
+                    .rfind(|(_, item)| matches!(
+                        item,
+                        ResponseItem::CustomToolCall { call_id: existing, .. } if existing == call_id
+                    ))
+                    .map(|(idx, _)| idx + 1)
+                    .unwrap_or_else(|| history.len());
+                insertions.push((insert_at, synth.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    insertions.sort_by_key(|(idx, _)| *idx);
+
+    for (idx, item) in insertions.into_iter().rev() {
+        let bounded = idx.min(history.len());
+        history.insert(bounded, item);
+    }
+}
+
+fn synthesize_missing_call_responses(input: &[ResponseItem]) -> Vec<ResponseItem> {
+    let completed_call_ids: HashSet<String> = input
+        .iter()
+        .filter_map(|ri| match ri {
+            ResponseItem::FunctionCallOutput { call_id, .. }
+            | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut emitted = HashSet::new();
+
+    input
+        .iter()
+        .filter_map(|ri| match ri {
+            ResponseItem::FunctionCall { call_id, .. }
+                if !completed_call_ids.contains(call_id) && emitted.insert(call_id.clone()) =>
+            {
+                Some(ResponseItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: aborted_function_call_output_payload(),
+                })
+            }
+            ResponseItem::LocalShellCall {
+                call_id: Some(call_id),
+                ..
+            } if !completed_call_ids.contains(call_id) && emitted.insert(call_id.clone()) => {
+                Some(ResponseItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: aborted_function_call_output_payload(),
+                })
+            }
+            ResponseItem::CustomToolCall { call_id, .. }
+                if !completed_call_ids.contains(call_id) && emitted.insert(call_id.clone()) =>
+            {
+                Some(ResponseItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    output: "aborted".to_string(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn aborted_function_call_output_payload() -> FunctionCallOutputPayload {
+    FunctionCallOutputPayload {
+        content: "Tool call aborted before a response was recorded.".to_string(),
+        success: Some(false),
+    }
+}
 use crate::executor::linkers::PreparedExec;
 use crate::tools::context::ApplyPatchCommandContext;
 use crate::tools::context::ExecCommandContext;
@@ -2732,6 +2791,9 @@ mod tests {
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_app_server_protocol::AuthMode;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::models::LocalShellAction;
+    use codex_protocol::models::LocalShellExecAction;
+    use codex_protocol::models::LocalShellStatus;
     use codex_protocol::models::ResponseItem;
 
     use mcp_types::ContentBlock;
@@ -2744,6 +2806,214 @@ mod tests {
     use std::time::Duration as StdDuration;
     use tokio::time::Duration;
     use tokio::time::sleep;
+
+    #[test]
+    fn synthesize_missing_function_call_outputs() {
+        let input = vec![ResponseItem::FunctionCall {
+            id: None,
+            name: "shell".to_string(),
+            arguments: "{}".to_string(),
+            call_id: "call-fn".to_string(),
+        }];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert_eq!(synthesized.len(), 1);
+        match &synthesized[0] {
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                assert_eq!(call_id, "call-fn");
+                assert_eq!(output.success, Some(false));
+                assert!(
+                    output
+                        .content
+                        .contains("Tool call aborted before a response was recorded.")
+                );
+            }
+            other => panic!("unexpected synthesized item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_synthesized_outputs_inserts_after_last_matching_call() {
+        let mut history = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-order".to_string(),
+            },
+            ResponseItem::LocalShellCall {
+                id: None,
+                call_id: Some("call-order".to_string()),
+                status: LocalShellStatus::InProgress,
+                action: LocalShellAction::Exec(LocalShellExecAction {
+                    command: vec!["echo".to_string()],
+                    timeout_ms: None,
+                    working_directory: None,
+                    env: None,
+                    user: None,
+                }),
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "hi".to_string(),
+                }],
+            },
+        ];
+        let synthesized = vec![ResponseItem::FunctionCallOutput {
+            call_id: "call-order".to_string(),
+            output: FunctionCallOutputPayload {
+                content: "done".to_string(),
+                success: Some(false),
+            },
+        }];
+
+        apply_synthesized_outputs(&mut history, &synthesized);
+
+        assert_eq!(history.len(), 4);
+        match &history[2] {
+            ResponseItem::FunctionCallOutput { call_id, .. } => {
+                assert_eq!(call_id, "call-order");
+            }
+            other => panic!("expected synthesized output after matching call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthesize_missing_function_and_local_shell_deduplicates() {
+        let input = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-merge".to_string(),
+            },
+            ResponseItem::LocalShellCall {
+                id: None,
+                call_id: Some("call-merge".to_string()),
+                status: LocalShellStatus::InProgress,
+                action: LocalShellAction::Exec(LocalShellExecAction {
+                    command: vec!["echo".to_string()],
+                    timeout_ms: None,
+                    working_directory: None,
+                    env: None,
+                    user: None,
+                }),
+            },
+        ];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert_eq!(synthesized.len(), 1);
+        match &synthesized[0] {
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                assert_eq!(call_id, "call-merge");
+                assert_eq!(output.success, Some(false));
+            }
+            other => panic!("unexpected synthesized item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthesize_missing_completed_shell_without_function_call_produces_output() {
+        let input = vec![ResponseItem::LocalShellCall {
+            id: None,
+            call_id: Some("call-complete".to_string()),
+            status: LocalShellStatus::Completed,
+            action: LocalShellAction::Exec(LocalShellExecAction {
+                command: vec!["echo".to_string()],
+                timeout_ms: None,
+                working_directory: None,
+                env: None,
+                user: None,
+            }),
+        }];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert_eq!(synthesized.len(), 1);
+        match &synthesized[0] {
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                assert_eq!(call_id, "call-complete");
+                assert_eq!(output.success, Some(false));
+            }
+            other => panic!("unexpected synthesized item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthesize_missing_custom_tool_outputs() {
+        let input = vec![ResponseItem::CustomToolCall {
+            id: None,
+            status: None,
+            call_id: "call-custom".to_string(),
+            name: "my_tool".to_string(),
+            input: "{}".to_string(),
+        }];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert_eq!(synthesized.len(), 1);
+        match &synthesized[0] {
+            ResponseItem::CustomToolCallOutput { call_id, output } => {
+                assert_eq!(call_id, "call-custom");
+                assert_eq!(output, "aborted");
+            }
+            other => panic!("unexpected synthesized item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthesize_missing_skips_completed_calls() {
+        let input = vec![
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+                call_id: "call-done".to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-done".to_string(),
+                output: FunctionCallOutputPayload {
+                    content: "done".to_string(),
+                    success: Some(true),
+                },
+            },
+        ];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert!(synthesized.is_empty());
+    }
+
+    #[test]
+    fn synthesize_missing_local_shell_outputs() {
+        let input = vec![ResponseItem::LocalShellCall {
+            id: None,
+            call_id: Some("call-shell".to_string()),
+            status: LocalShellStatus::InProgress,
+            action: LocalShellAction::Exec(LocalShellExecAction {
+                command: vec!["echo".to_string(), "hi".to_string()],
+                timeout_ms: None,
+                working_directory: None,
+                env: None,
+                user: None,
+            }),
+        }];
+
+        let synthesized = synthesize_missing_call_responses(&input);
+
+        assert_eq!(synthesized.len(), 1);
+        match &synthesized[0] {
+            ResponseItem::FunctionCallOutput { call_id, output } => {
+                assert_eq!(call_id, "call-shell");
+                assert_eq!(output.success, Some(false));
+            }
+            other => panic!("unexpected synthesized item: {other:?}"),
+        }
+    }
 
     #[test]
     fn reconstruct_history_matches_live_compactions() {
