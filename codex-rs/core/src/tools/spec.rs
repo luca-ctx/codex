@@ -620,7 +620,6 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
-    use crate::tools::handlers::ReviewAgentHandler;
     use crate::tools::handlers::SessionHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
@@ -638,7 +637,6 @@ pub(crate) fn build_specs(
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let session_handler = Arc::new(SessionHandler);
-    let review_agent_handler = Arc::new(ReviewAgentHandler);
 
     if config.experimental_unified_exec_tool {
         builder.push_spec(create_unified_exec_tool());
@@ -682,24 +680,6 @@ pub(crate) fn build_specs(
         parameters: JsonSchema::Object { properties: Default::default(), required: None, additional_properties: Some(false.into()) },
     }));
     builder.register_handler("permanently_terminate_session", session_handler);
-
-    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
-        name: "request_code_review".to_string(),
-        description: "Request a comprehensive code review of recent changes. Optionally provide a custom review plan and scope (HEAD diff, commit hash, or range).".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties: {
-                let mut p = std::collections::BTreeMap::new();
-                p.insert("plan".to_string(), JsonSchema::String { description: Some("Optional custom review plan text".to_string()) });
-                p.insert("scope".to_string(), JsonSchema::Object { properties: Default::default(), required: None, additional_properties: Some(true.into()) });
-                p.insert("model".to_string(), JsonSchema::String { description: Some("Optional model override for the reviewer".to_string()) });
-                p
-            },
-            required: None,
-            additional_properties: Some(false.into()),
-        },
-    }));
-    builder.register_handler("request_code_review", review_agent_handler);
 
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
@@ -841,7 +821,6 @@ mod tests {
                 "unified_exec",
                 "update_plan",
                 "permanently_terminate_session",
-                "request_code_review",
                 "web_search",
                 "view_image",
             ],
@@ -868,7 +847,6 @@ mod tests {
                 "unified_exec",
                 "update_plan",
                 "permanently_terminate_session",
-                "request_code_review",
                 "web_search",
                 "view_image",
             ],
@@ -978,7 +956,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "web_search",
                 "view_image",
                 "test_server/do_something_cool",
@@ -986,7 +963,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[5].spec,
+            tools[4].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1098,7 +1075,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "view_image",
                 "test_server/cool",
                 "test_server/do",
@@ -1150,7 +1126,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1159,7 +1134,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1219,7 +1194,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1227,7 +1201,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -1285,7 +1259,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1293,7 +1266,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1354,7 +1327,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1362,7 +1334,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
@@ -1460,7 +1432,6 @@ mod tests {
             &[
                 "unified_exec",
                 "permanently_terminate_session",
-                "request_code_review",
                 "apply_patch",
                 "web_search",
                 "view_image",
@@ -1469,7 +1440,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[6].spec,
+            tools[5].spec,
             ToolSpec::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {

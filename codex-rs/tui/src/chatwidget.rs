@@ -132,6 +132,7 @@ struct RunningCommand {
 }
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
+const DEFAULT_KEEP_GOING_MESSAGE: &str = "Please continue working on this task. Keep going with your current approach. When you're done with absolutely everything and nothing is left to do, invoke `permanently_terminate_session`. If you are working on an exec plan, make sure to mark things as completed before terminating.";
 
 #[derive(Default)]
 struct RateLimitWarningState {
@@ -492,9 +493,11 @@ impl ChatWidget {
             self.maybe_send_next_queued_input();
         } else if self.keep_going_mode {
             // Otherwise, if keep‑going mode is enabled, automatically continue.
-            let continuation_message =
-                "Please continue working on this task. Keep going with your current approach. When you're done with absolutely everything and nothing is left to do, invoke `permanently_terminate_session`. If you are working on an exec plan, make sure to mark things as completed before terminating. Before you wrap up, call `request_code_review` so a reviewer signs off."
-                    .to_string();
+            let continuation_message = self
+                .config
+                .keep_going_message
+                .clone()
+                .unwrap_or_else(|| DEFAULT_KEEP_GOING_MESSAGE.to_string());
             let user_message = UserMessage {
                 text: continuation_message,
                 image_paths: vec![],

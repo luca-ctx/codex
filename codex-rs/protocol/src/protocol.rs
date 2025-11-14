@@ -1460,6 +1460,7 @@ mod tests {
                 history_entry_count: 0,
                 initial_messages: None,
                 rollout_path: rollout_file.path().to_path_buf(),
+                name: None,
             }),
         };
 

@@ -773,6 +773,13 @@ notifications = true
 # You can optionally filter to specific notification types.
 # Available types are "agent-turn-complete" and "approval-requested".
 notifications = [ "agent-turn-complete", "approval-requested" ]
+
+# Override the auto-continue prompt that keep-going mode submits after a turn completes.
+# When unset, Codex falls back to its default reminder.
+keep_going_message = """
+Please continue executing the benchmarking plan. When the work is totally done, run the
+`permanently_terminate_session` tool.
+"""
 ```
 
 > [!NOTE]
@@ -798,6 +805,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `disable_response_storage`                       | boolean                                                           | Required for ZDR orgs.                                                                                                     |
 | `notify`                                         | array<string>                                                     | External program for notifications.                                                                                        |
 | `hooks.onAgentTurnFinished.command`              | string                                                            | Optional shell command to run after a turn ends in the chat widget (non-keep-going) or when the agent permanently terminates the session. |
+| `tui.keep_going_message`                         | string                                                            | Custom message queued automatically when keep-going mode (/continue) submits a follow-up prompt. Defaults to Codex’s built-in reminder.    |
 
 ## hooks
 

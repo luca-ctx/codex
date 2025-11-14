@@ -40,12 +40,12 @@ If you need to write any temporary files in the repo workspace for throwaway pur
 
 When I start you out on a task, please do as much work towards it as you can. Eventually your turn will end, and then I will send an automated message to send you back into the loop. This will continue until you call the tool to permanently end the session. Don't call this function until you are absolutely done with everything and there is nothing left you could do on your task (such as reviewing your code, making sure tests pass, making sure a manual QA pass over the functionality works, additional cleanup from your work, etc).
 
-Before handing off completed work, run `request_code_review` (or delegate to a codex review agent) so we keep the automated review loop tight.
+Before handing off completed work, invoke the MCP `codex-code-review` tool (or delegate to a codex review agent) so we keep the automated review loop tight.
 
 # Agent-level tools
 
 - When keep-going (continue) mode is active, only end the session by calling the `permanently_terminate_session` tool once nothing remains to fix or improve.
-- Use `request_code_review` to spin up a reviewer before handoff; feel free to pass a plan or explicit scope.
+- Use the MCP `codex-code-review` tool to spin up a reviewer before handoff; feel free to pass a plan or explicit scope via the tool instructions.
 - Reach for the MCP `codex-batch` tool (and follow up with `codex-reply`) when you want to fan out multiple Codex sub-sessions in parallel.
 
 # Working with Other AI Agents in a Dirty Workspace

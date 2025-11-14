@@ -400,6 +400,11 @@ pub struct Tui {
     /// Defaults to `false`.
     #[serde(default)]
     pub notifications: Notifications,
+
+    /// Optional custom message used when keep-going mode queues a continuation prompt.
+    /// When unset, Codex falls back to its built-in reminder.
+    #[serde(default)]
+    pub keep_going_message: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]

@@ -595,6 +595,7 @@ fn print_completion(cmd: CompletionCommand) {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
+    use codex_core::protocol::SessionName;
     use codex_core::protocol::TokenUsage;
     use codex_protocol::ConversationId;
 

@@ -96,7 +96,6 @@ async fn model_selects_expected_tools() {
         vec![
             "local_shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
             "view_image".to_string(),
         ],
         "codex-mini-latest should expose the local shell tool",
@@ -108,7 +107,6 @@ async fn model_selects_expected_tools() {
         vec![
             "shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
             "view_image".to_string(),
         ],
         "o3 should expose the generic shell tool",
@@ -120,7 +118,6 @@ async fn model_selects_expected_tools() {
         vec![
             "shell".to_string(),
             "permanently_terminate_session".to_string(),
-            "request_code_review".to_string(),
             "apply_patch".to_string(),
             "view_image".to_string(),
         ],

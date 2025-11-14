@@ -22,7 +22,7 @@
 
 - **Agent-level tools**
   - `permanently_terminate_session` is available in every session. Use it only when no further work remains; it resets keep-going, emits a termination event, and triggers turn-finished hooks.
-  - `request_code_review` starts the review-agent pipeline. Optional `plan`, `scope`, and `model` inputs are supported; the command returns immediately while background review events stream through standard review-mode updates.
+  - Use the MCP `codex-code-review` tool to launch the review-agent pipeline. Provide the active `conversation_id`, the review instructions/plan, and (optionally) a reviewer hint or model override; the tool returns immediately while review events stream back asynchronously.
 
 - **MCP Codex orchestration**
   - `codex`: launches a fresh Codex session from MCP with optional overrides (model, plan tool usage, sandbox mode, approval policy) and returns a `conversation_id`.

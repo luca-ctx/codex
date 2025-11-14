@@ -24,6 +24,7 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::FileChange;
+use codex_core::protocol::InputItem;
 use codex_core::protocol::InputMessageKind;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
@@ -272,6 +273,32 @@ fn turn_finished_hook_skips_when_keep_going_enabled() {
 }
 
 #[test]
+fn keep_going_message_uses_config_override() {
+    let mut cfg = test_config();
+    let custom_message = "Custom keep going steps".to_string();
+    cfg.keep_going_message = Some(custom_message.clone());
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_with_config(cfg);
+    chat.keep_going_mode = true;
+    chat.on_task_started();
+    chat.on_task_complete(None);
+
+    let op = op_rx
+        .try_recv()
+        .expect("expected queued keep-going user input");
+    match op {
+        Op::UserInput { items } => {
+            assert_eq!(
+                items,
+                vec![InputItem::Text {
+                    text: custom_message,
+                }]
+            );
+        }
+        other => panic!("expected Op::UserInput, got {other:?}"),
+    }
+}
+
+#[test]
 fn turn_finished_hook_runs_on_session_termination() {
     let (mut chat, runner, _rx, _op_rx) =
         make_chatwidget_with_hook("terminal-notifier 'turn finished'");
@@ -314,10 +341,19 @@ fn make_chatwidget_manual() -> (
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
 ) {
+    make_chatwidget_with_config(test_config())
+}
+
+fn make_chatwidget_with_config(
+    cfg: Config,
+) -> (
+    ChatWidget,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
     let (tx_raw, rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
-    let cfg = test_config();
     let bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
         frame_requester: FrameRequester::test_dummy(),

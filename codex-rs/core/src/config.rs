@@ -154,6 +154,9 @@ pub struct Config {
     /// and turn completions when not focused.
     pub tui_notifications: Notifications,
 
+    /// Optional override for the keep-going continuation message queued by the TUI.
+    pub keep_going_message: Option<String>,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -1245,6 +1248,7 @@ impl Config {
                 .as_ref()
                 .map(|t| t.notifications.clone())
                 .unwrap_or_default(),
+            keep_going_message: cfg.tui.as_ref().and_then(|t| t.keep_going_message.clone()),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -2301,6 +2305,7 @@ model_verbosity = "high"
                 windows_wsl_setup_acknowledged: false,
                 disable_paste_burst: false,
                 tui_notifications: Default::default(),
+                keep_going_message: None,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -2397,6 +2402,7 @@ command = "terminal-notifier 'turn finished'"
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
             tui_notifications: Default::default(),
+            keep_going_message: None,
             otel: OtelConfig::default(),
         };
 
@@ -2479,6 +2485,7 @@ command = "terminal-notifier 'turn finished'"
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
             tui_notifications: Default::default(),
+            keep_going_message: None,
             otel: OtelConfig::default(),
         };
 
@@ -2547,6 +2554,7 @@ command = "terminal-notifier 'turn finished'"
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
             tui_notifications: Default::default(),
+            keep_going_message: None,
             otel: OtelConfig::default(),
         };
 
