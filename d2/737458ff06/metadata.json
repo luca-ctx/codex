@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "d2737458ff06",
+  "strategy": "manual-commit",
+  "branch": "codex/improve-code-quality",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "agents/exec_plans/context-cleaner-code-quality/exec_plan.md",
+    "codex-rs/core/src/codex/cleaner.rs",
+    "codex-rs/core/src/codex/cleaner/history.rs",
+    "codex-rs/core/src/codex/cleaner/removal.rs",
+    "codex-rs/core/src/codex/cleaner/response.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d2/737458ff06/0/metadata.json",
+      "transcript": "/d2/737458ff06/0/full.jsonl",
+      "content_hash": "/d2/737458ff06/0/content_hash.txt",
+      "prompt": "/d2/737458ff06/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 104251,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 321792,
+    "output_tokens": 7151,
+    "api_call_count": 10
+  }
+}
