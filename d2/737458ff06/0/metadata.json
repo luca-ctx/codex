@@ -3,7 +3,7 @@
   "checkpoint_id": "d2737458ff06",
   "session_id": "019ee26a-920f-7823-b151-371e81c8a4ef",
   "strategy": "manual-commit",
-  "created_at": "2026-06-20T01:14:09.362747996Z",
+  "created_at": "2026-06-20T01:16:27.094916982Z",
   "branch": "codex/improve-code-quality",
   "checkpoints_count": 1,
   "files_touched": [
@@ -15,15 +15,15 @@
   "checkpoint_transcript_start": 102,
   "transcript_lines_at_start": 102,
   "initial_attribution": {
-    "calculated_at": "2026-06-20T01:14:09.349191557Z",
-    "agent_lines": 4,
-    "agent_removed": 3,
+    "calculated_at": "2026-06-20T01:16:27.079412342Z",
+    "agent_lines": 2,
+    "agent_removed": 0,
     "human_added": 899,
     "human_modified": 0,
     "human_removed": 0,
-    "total_committed": 903,
-    "total_lines_changed": 1678,
-    "agent_percentage": 0.4171632896305125,
+    "total_committed": 901,
+    "total_lines_changed": 1673,
+    "agent_percentage": 0.11954572624028689,
     "metric_version": 2
   }
 }
