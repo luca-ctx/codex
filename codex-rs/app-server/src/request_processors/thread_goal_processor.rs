@@ -446,13 +446,14 @@ impl ThreadGoalRequestProcessor {
             );
         }
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                ThreadGoalUpdatedNotification {
+            .send_thread_server_notification(
+                thread_id,
+                ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
                     thread_id: thread_id.to_string(),
                     turn_id: None,
                     goal,
-                },
-            ))
+                }),
+            )
             .await;
     }
 
@@ -471,11 +472,12 @@ impl ThreadGoalRequestProcessor {
             );
         }
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalCleared(
-                ThreadGoalClearedNotification {
+            .send_thread_server_notification(
+                thread_id,
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
                     thread_id: thread_id.to_string(),
-                },
-            ))
+                }),
+            )
             .await;
     }
 }

@@ -30,6 +30,7 @@ use tracing::warn;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
+use crate::subagent_notification_filter::SubagentNotificationFilter;
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
@@ -110,6 +111,7 @@ pub(crate) struct OutgoingMessageSender {
     /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
     analytics_events_client: AnalyticsEventsClient,
+    subagent_notification_filter: SubagentNotificationFilter,
 }
 
 #[derive(Clone)]
@@ -174,12 +176,18 @@ impl ThreadScopedOutgoingMessageSender {
             return;
         }
         self.outgoing
-            .send_server_notification_to_connections(self.connection_ids.as_slice(), notification)
+            .send_thread_server_notification_to_connections(
+                self.connection_ids.as_slice(),
+                self.thread_id,
+                notification,
+            )
             .await;
     }
 
     pub(crate) async fn send_global_server_notification(&self, notification: ServerNotification) {
-        self.outgoing.send_server_notification(notification).await;
+        self.outgoing
+            .send_thread_server_notification(self.thread_id, notification)
+            .await;
     }
 
     pub(crate) async fn abort_pending_server_requests(&self) {
@@ -220,13 +228,30 @@ impl OutgoingMessageSender {
         sender: mpsc::Sender<OutgoingEnvelope>,
         analytics_events_client: AnalyticsEventsClient,
     ) -> Self {
+        Self::new_with_subagent_notification_filter(
+            sender,
+            analytics_events_client,
+            SubagentNotificationFilter::from_env(),
+        )
+    }
+
+    fn new_with_subagent_notification_filter(
+        sender: mpsc::Sender<OutgoingEnvelope>,
+        analytics_events_client: AnalyticsEventsClient,
+        subagent_notification_filter: SubagentNotificationFilter,
+    ) -> Self {
         Self {
             next_server_request_id: AtomicI64::new(0),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
             analytics_events_client,
+            subagent_notification_filter,
         }
+    }
+
+    pub(crate) fn register_subagent_thread(&self, thread_id: ThreadId) {
+        self.subagent_notification_filter.register(thread_id);
     }
 
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
@@ -594,6 +619,64 @@ impl OutgoingMessageSender {
             .await;
     }
 
+    pub(crate) async fn send_thread_server_notification(
+        &self,
+        thread_id: ThreadId,
+        notification: ServerNotification,
+    ) {
+        if matches!(
+            notification,
+            ServerNotification::ThreadArchived(_) | ServerNotification::ThreadUnarchived(_)
+        ) {
+            self.analytics_events_client
+                .track_notification(&notification);
+        }
+        self.send_thread_server_notification_to_connections(&[], thread_id, notification)
+            .await;
+    }
+
+    pub(crate) async fn send_server_notification_for_thread_id(
+        &self,
+        thread_id: &str,
+        notification: ServerNotification,
+    ) {
+        match ThreadId::from_string(thread_id) {
+            Ok(thread_id) => {
+                self.send_thread_server_notification(thread_id, notification)
+                    .await;
+            }
+            Err(_) => self.send_server_notification(notification).await,
+        }
+    }
+
+    pub(crate) async fn send_thread_server_notification_to_connections(
+        &self,
+        connection_ids: &[ConnectionId],
+        thread_id: ThreadId,
+        notification: ServerNotification,
+    ) {
+        if let ServerNotification::ThreadStarted(params) = &notification
+            && (params.thread.parent_thread_id.is_some()
+                || matches!(
+                    params.thread.thread_source.as_ref(),
+                    Some(codex_app_server_protocol::ThreadSource::Subagent)
+                ))
+        {
+            self.register_subagent_thread(thread_id);
+        }
+        let should_suppress =
+            !matches!(&notification, ServerNotification::ServerRequestResolved(_))
+                && self.subagent_notification_filter.should_suppress(thread_id);
+        if matches!(&notification, ServerNotification::ThreadDeleted(_)) {
+            self.subagent_notification_filter.unregister(thread_id);
+        }
+        if should_suppress {
+            return;
+        }
+        self.send_server_notification_to_connections(connection_ids, notification)
+            .await;
+    }
+
     pub(crate) async fn send_server_notification_to_connections(
         &self,
         connection_ids: &[ConnectionId],
@@ -759,7 +842,10 @@ mod tests {
     use codex_app_server_protocol::ModelVerificationNotification;
     use codex_app_server_protocol::RateLimitSnapshot;
     use codex_app_server_protocol::RateLimitWindow;
+    use codex_app_server_protocol::ServerRequestResolvedNotification;
     use codex_app_server_protocol::ServerResponse;
+    use codex_app_server_protocol::ThreadClosedNotification;
+    use codex_app_server_protocol::ThreadDeletedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
@@ -1101,6 +1187,88 @@ mod tests {
             }
             other => panic!("expected targeted response envelope, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn subagent_filter_drops_thread_notifications_but_preserves_request_resolution() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = OutgoingMessageSender::new_with_subagent_notification_filter(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+            SubagentNotificationFilter::enabled_for_test(),
+        );
+        let child_thread_id = ThreadId::new();
+        outgoing.register_subagent_thread(child_thread_id);
+
+        outgoing
+            .send_thread_server_notification(
+                child_thread_id,
+                ServerNotification::GuardianWarning(GuardianWarningNotification {
+                    thread_id: child_thread_id.to_string(),
+                    message: "hidden child warning".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        outgoing
+            .send_thread_server_notification(
+                child_thread_id,
+                ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
+                    thread_id: child_thread_id.to_string(),
+                    request_id: RequestId::Integer(9),
+                }),
+            )
+            .await;
+        let envelope = rx.recv().await.expect("request resolution should be sent");
+        assert!(matches!(
+            envelope,
+            OutgoingEnvelope::Broadcast {
+                message: OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                    notification: ServerNotification::ServerRequestResolved(_),
+                    ..
+                }),
+            }
+        ));
+
+        outgoing
+            .send_thread_server_notification(
+                child_thread_id,
+                ServerNotification::ThreadClosed(ThreadClosedNotification {
+                    thread_id: child_thread_id.to_string(),
+                }),
+            )
+            .await;
+        outgoing
+            .send_thread_server_notification(
+                child_thread_id,
+                ServerNotification::GuardianWarning(GuardianWarningNotification {
+                    thread_id: child_thread_id.to_string(),
+                    message: "still hidden after close".to_string(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        outgoing
+            .send_thread_server_notification(
+                child_thread_id,
+                ServerNotification::ThreadDeleted(ThreadDeletedNotification {
+                    thread_id: child_thread_id.to_string(),
+                }),
+            )
+            .await;
+        assert!(
+            !outgoing
+                .subagent_notification_filter
+                .should_suppress(child_thread_id)
+        );
     }
 
     #[tokio::test]

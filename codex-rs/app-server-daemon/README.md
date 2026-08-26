@@ -111,3 +111,8 @@ The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
 - `app-server.pid` for the app-server process record
 - `app-server-updater.pid` for the pid-backed standalone updater loop
 - `daemon.lock` for daemon-wide lifecycle serialization
+
+`settings.json` also accepts `"suppressSubagentNotifications": true`. When
+enabled, managed app-server starts persistently set
+`CODEX_APP_SERVER_SUPPRESS_SUBAGENT_NOTIFICATIONS=1`, including restarts
+performed by the standalone updater.

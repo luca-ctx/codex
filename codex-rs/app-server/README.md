@@ -1643,6 +1643,15 @@ Examples:
 - Opt out of thread lifecycle notifications: `thread/started`
 - Opt out of streamed agent text deltas: `item/agentMessage/delta`
 
+### Subagent notification suppression
+
+Set `CODEX_APP_SERVER_SUPPRESS_SUBAGENT_NOTIFICATIONS=1` before starting app-server to
+suppress typed streaming and lifecycle notifications scoped to spawned child threads.
+Parent-thread notifications continue normally, and JSON-RPC requests, responses, errors, and
+`serverRequest/resolved` notifications are preserved so child orchestration and approval
+lifecycles keep working. The setting is process-wide and is disabled by default; `true`, `yes`,
+and `on` are also accepted.
+
 ### Fuzzy file search events (experimental)
 
 The fuzzy file search session API emits per-query notifications:

@@ -588,9 +588,12 @@ impl ThreadRequestProcessor {
             .await?;
         self.outgoing.send_response(request_id, response).await;
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadReverted(
-                ThreadRevertedNotification { thread_id },
-            ))
+            .send_server_notification_for_thread_id(
+                &thread_id,
+                ServerNotification::ThreadReverted(ThreadRevertedNotification {
+                    thread_id: thread_id.clone(),
+                }),
+            )
             .await;
         Ok(None)
     }
@@ -607,9 +610,12 @@ impl ThreadRequestProcessor {
                     .await;
                 for thread_id in archived_thread_ids {
                     self.outgoing
-                        .send_server_notification(ServerNotification::ThreadArchived(
-                            ThreadArchivedNotification { thread_id },
-                        ))
+                        .send_server_notification_for_thread_id(
+                            &thread_id,
+                            ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                                thread_id: thread_id.clone(),
+                            }),
+                        )
                         .await;
                 }
                 Ok(None)
@@ -648,9 +654,10 @@ impl ThreadRequestProcessor {
                     .await;
                 if let Some(notification) = notification {
                     self.outgoing
-                        .send_server_notification(ServerNotification::ThreadNameUpdated(
-                            notification,
-                        ))
+                        .send_server_notification_for_thread_id(
+                            &notification.thread_id.clone(),
+                            ServerNotification::ThreadNameUpdated(notification),
+                        )
                         .await;
                 }
                 Ok(None)
@@ -738,7 +745,10 @@ impl ThreadRequestProcessor {
                     .send_response(request_id.clone(), response)
                     .await;
                 self.outgoing
-                    .send_server_notification(ServerNotification::ThreadUnarchived(notification))
+                    .send_server_notification_for_thread_id(
+                        &notification.thread_id.clone(),
+                        ServerNotification::ThreadUnarchived(notification),
+                    )
                     .await;
                 Ok(None)
             }
@@ -1586,7 +1596,7 @@ impl ThreadRequestProcessor {
 
         listener_task_context
             .outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_thread_server_notification(thread_id, ServerNotification::ThreadStarted(notif))
             .instrument(tracing::info_span!(
                 "app_server.thread_start.notify_started",
                 otel.name = "app_server.thread_start.notify_started",
@@ -1974,12 +1984,15 @@ impl ThreadRequestProcessor {
                 && previous_project_id.as_ref() != Some(project_id)
             {
                 self.outgoing
-                    .send_server_notification(ServerNotification::ThreadProjectUpdated(
-                        ThreadProjectUpdatedNotification {
-                            thread_id: thread_id.clone(),
-                            project_id: project_id.clone(),
-                        },
-                    ))
+                    .send_thread_server_notification(
+                        thread_uuid,
+                        ServerNotification::ThreadProjectUpdated(
+                            ThreadProjectUpdatedNotification {
+                                thread_id: thread_id.clone(),
+                                project_id: project_id.clone(),
+                            },
+                        ),
+                    )
                     .await;
             }
             updated_thread
@@ -3524,6 +3537,14 @@ impl ThreadRequestProcessor {
         let mut raw_events_enabled = false;
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;
+            if config_snapshot.parent_thread_id.is_some()
+                || matches!(
+                    config_snapshot.thread_source.as_ref(),
+                    Some(codex_protocol::protocol::ThreadSource::Subagent)
+                )
+            {
+                self.outgoing.register_subagent_thread(thread_id);
+            }
             self.thread_watch_manager
                 .upsert_thread(&thread_id.to_string())
                 .await;
@@ -5164,7 +5185,7 @@ impl ThreadRequestProcessor {
         }
 
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_thread_server_notification(thread_id, ServerNotification::ThreadStarted(notif))
             .await;
         if inherited_goal {
             self.thread_goal_processor

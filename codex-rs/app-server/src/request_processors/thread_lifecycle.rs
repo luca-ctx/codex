@@ -483,7 +483,10 @@ pub(super) async fn unload_thread_without_subscribers(
                     thread_id: thread_id.to_string(),
                 };
                 outgoing
-                    .send_server_notification(ServerNotification::ThreadClosed(notification))
+                    .send_thread_server_notification(
+                        thread_id,
+                        ServerNotification::ThreadClosed(notification),
+                    )
                     .await;
                 pending_thread_unloads.lock().await.remove(&thread_id);
             }
@@ -528,13 +531,14 @@ pub(super) async fn handle_thread_listener_command(
         }
         ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, goal } => {
             outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
+                .send_thread_server_notification(
+                    conversation_id,
+                    ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
                         thread_id: conversation_id.to_string(),
                         turn_id,
                         goal,
-                    },
-                ))
+                    }),
+                )
                 .await;
         }
         ThreadListenerCommand::EmitThreadQueueChanged => {
@@ -559,11 +563,12 @@ pub(super) async fn handle_thread_listener_command(
         }
         ThreadListenerCommand::EmitThreadGoalCleared => {
             outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
+                .send_thread_server_notification(
+                    conversation_id,
+                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
                         thread_id: conversation_id.to_string(),
-                    },
-                ))
+                    }),
+                )
                 .await;
         }
         ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
@@ -856,22 +861,24 @@ pub(super) async fn send_thread_goal_snapshot_notification(
     match state_db.thread_goals().get_thread_goal(thread_id).await {
         Ok(Some(goal)) => {
             outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
+                .send_thread_server_notification(
+                    thread_id,
+                    ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
                         thread_id: thread_id.to_string(),
                         turn_id: None,
                         goal: api_thread_goal_from_state(goal),
-                    },
-                ))
+                    }),
+                )
                 .await;
         }
         Ok(None) => {
             outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
+                .send_thread_server_notification(
+                    thread_id,
+                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
                         thread_id: thread_id.to_string(),
-                    },
-                ))
+                    }),
+                )
                 .await;
         }
         Err(err) => {

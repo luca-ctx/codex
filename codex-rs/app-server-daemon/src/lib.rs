@@ -589,6 +589,7 @@ impl Daemon {
 
         let settings = DaemonSettings {
             remote_control_enabled: options.remote_control_enabled,
+            suppress_subagent_notifications: false,
         };
         if client::probe(&self.socket_path).await.is_ok()
             && self.running_backend(&settings).await?.is_none()
@@ -703,6 +704,7 @@ impl Daemon {
             pid_file: self.pid_file.clone(),
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
+            suppress_subagent_notifications: settings.suppress_subagent_notifications,
         }
     }
 

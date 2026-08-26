@@ -24,6 +24,8 @@ const STOP_GRACE_PERIOD: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(70);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
+const SUPPRESS_SUBAGENT_NOTIFICATIONS_ENV_VAR: &str =
+    "CODEX_APP_SERVER_SUPPRESS_SUBAGENT_NOTIFICATIONS";
 
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -70,12 +72,29 @@ enum PidFileState {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(unix), allow(dead_code))]
 enum PidCommandKind {
-    AppServer { remote_control_enabled: bool },
+    AppServer {
+        remote_control_enabled: bool,
+        suppress_subagent_notifications: bool,
+    },
     UpdateLoop,
 }
 
 impl PidBackend {
     pub(crate) fn new(codex_bin: PathBuf, pid_file: PathBuf, remote_control_enabled: bool) -> Self {
+        Self::new_with_subagent_notification_suppression(
+            codex_bin,
+            pid_file,
+            remote_control_enabled,
+            /*suppress_subagent_notifications*/ false,
+        )
+    }
+
+    pub(crate) fn new_with_subagent_notification_suppression(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        remote_control_enabled: bool,
+        suppress_subagent_notifications: bool,
+    ) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {
             codex_bin,
@@ -83,6 +102,7 @@ impl PidBackend {
             lock_file,
             command_kind: PidCommandKind::AppServer {
                 remote_control_enabled,
+                suppress_subagent_notifications,
             },
         }
     }
@@ -166,9 +186,7 @@ impl PidBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log.into_std().await));
-        if let Some((key, value)) = self.command_env() {
-            command.env(key, value);
-        }
+        command.envs(self.command_env());
 
         #[cfg(unix)]
         {
@@ -414,25 +432,32 @@ impl PidBackend {
         match self.command_kind {
             PidCommandKind::AppServer {
                 remote_control_enabled: true,
+                ..
             } => vec!["app-server", "--remote-control", "--listen", "unix://"],
             PidCommandKind::AppServer {
                 remote_control_enabled: false,
+                ..
             } => vec!["app-server", "--listen", "unix://"],
             PidCommandKind::UpdateLoop => vec!["app-server", "daemon", "pid-update-loop"],
         }
     }
 
     #[cfg(unix)]
-    fn command_env(&self) -> Option<(&'static str, &'static str)> {
-        match self.command_kind {
-            PidCommandKind::AppServer {
-                remote_control_enabled: false,
-            } => Some((REMOTE_CONTROL_DISABLED_ENV_VAR, "1")),
-            PidCommandKind::AppServer {
-                remote_control_enabled: true,
+    fn command_env(&self) -> Vec<(&'static str, &'static str)> {
+        let mut env = Vec::new();
+        if let PidCommandKind::AppServer {
+            remote_control_enabled,
+            suppress_subagent_notifications,
+        } = self.command_kind
+        {
+            if !remote_control_enabled {
+                env.push((REMOTE_CONTROL_DISABLED_ENV_VAR, "1"));
             }
-            | PidCommandKind::UpdateLoop => None,
+            if suppress_subagent_notifications {
+                env.push((SUPPRESS_SUBAGENT_NOTIFICATIONS_ENV_VAR, "1"));
+            }
         }
+        env
     }
 
     fn terminate_process(&self, pid: u32) -> Result<()> {

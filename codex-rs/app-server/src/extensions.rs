@@ -233,13 +233,14 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 let outgoing = Arc::clone(&self.outgoing);
                 tokio::spawn(async move {
                     outgoing
-                        .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                            ThreadGoalUpdatedNotification {
+                        .send_thread_server_notification(
+                            thread_id,
+                            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
                                 thread_id: thread_id.to_string(),
                                 turn_id,
                                 goal,
-                            },
-                        ))
+                            }),
+                        )
                         .await;
                 });
             }

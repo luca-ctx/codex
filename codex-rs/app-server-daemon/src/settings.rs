@@ -10,6 +10,8 @@ use tokio::fs;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DaemonSettings {
     pub(crate) remote_control_enabled: bool,
+    #[serde(default)]
+    pub(crate) suppress_subagent_notifications: bool,
 }
 
 impl DaemonSettings {
@@ -55,9 +57,22 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&DaemonSettings {
                 remote_control_enabled: true,
+                suppress_subagent_notifications: true,
             })
             .expect("serialize"),
-            r#"{"remoteControlEnabled":true}"#
+            r#"{"remoteControlEnabled":true,"suppressSubagentNotifications":true}"#
+        );
+    }
+
+    #[test]
+    fn daemon_settings_default_suppression_off_for_existing_files() {
+        assert_eq!(
+            serde_json::from_str::<DaemonSettings>(r#"{"remoteControlEnabled":true}"#)
+                .expect("deserialize"),
+            DaemonSettings {
+                remote_control_enabled: true,
+                suppress_subagent_notifications: false,
+            }
         );
     }
 }

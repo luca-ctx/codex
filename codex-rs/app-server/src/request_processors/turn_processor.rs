@@ -1467,7 +1467,10 @@ impl TurnRequestProcessor {
             );
             let notif = thread_started_notification(thread);
             self.outgoing
-                .send_server_notification(ServerNotification::ThreadStarted(notif))
+                .send_thread_server_notification(
+                    thread_id,
+                    ServerNotification::ThreadStarted(notif),
+                )
                 .await;
         }
 

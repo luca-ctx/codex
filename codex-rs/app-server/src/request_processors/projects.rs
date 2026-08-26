@@ -257,12 +257,13 @@ impl ProjectRequestProcessor {
     async fn notify_thread_projects(&self, thread_ids: Vec<String>, project_id: Option<String>) {
         for thread_id in thread_ids {
             self.outgoing
-                .send_server_notification(ServerNotification::ThreadProjectUpdated(
-                    ThreadProjectUpdatedNotification {
-                        thread_id,
+                .send_server_notification_for_thread_id(
+                    &thread_id,
+                    ServerNotification::ThreadProjectUpdated(ThreadProjectUpdatedNotification {
+                        thread_id: thread_id.clone(),
                         project_id: project_id.clone(),
-                    },
-                ))
+                    }),
+                )
                 .await;
         }
     }

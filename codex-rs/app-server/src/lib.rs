@@ -126,6 +126,7 @@ mod request_processors;
 mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
+mod subagent_notification_filter;
 mod thread_state;
 mod thread_status;
 mod transport;

@@ -231,7 +231,22 @@ fn app_server_disabled_remote_control_uses_compatible_args_and_runtime_env() {
     );
     assert_eq!(
         backend.command_env(),
-        Some((REMOTE_CONTROL_DISABLED_ENV_VAR, "1"))
+        vec![(REMOTE_CONTROL_DISABLED_ENV_VAR, "1")]
+    );
+}
+
+#[test]
+fn app_server_subagent_suppression_uses_runtime_env() {
+    let backend = PidBackend::new_with_subagent_notification_suppression(
+        "codex".into(),
+        "app-server.pid".into(),
+        /*remote_control_enabled*/ true,
+        /*suppress_subagent_notifications*/ true,
+    );
+
+    assert_eq!(
+        backend.command_env(),
+        vec![("CODEX_APP_SERVER_SUPPRESS_SUBAGENT_NOTIFICATIONS", "1")]
     );
 }
 

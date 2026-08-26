@@ -247,7 +247,10 @@ impl ThreadWatchManager {
             && let Some(outgoing) = &self.outgoing
         {
             outgoing
-                .send_server_notification(ServerNotification::ThreadStatusChanged(notification))
+                .send_server_notification_for_thread_id(
+                    &notification.thread_id.clone(),
+                    ServerNotification::ThreadStatusChanged(notification),
+                )
                 .await;
         }
     }

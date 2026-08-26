@@ -19,13 +19,15 @@ pub(crate) struct BackendPaths {
     pub(crate) pid_file: PathBuf,
     pub(crate) update_pid_file: PathBuf,
     pub(crate) remote_control_enabled: bool,
+    pub(crate) suppress_subagent_notifications: bool,
 }
 
 pub(crate) fn pid_backend(paths: BackendPaths) -> PidBackend {
-    PidBackend::new(
+    PidBackend::new_with_subagent_notification_suppression(
         paths.codex_bin,
         paths.pid_file,
         paths.remote_control_enabled,
+        paths.suppress_subagent_notifications,
     )
 }
 
