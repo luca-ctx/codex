@@ -140,6 +140,31 @@ impl BoundedOutboundBuffer {
         }
     }
 
+    fn remove_stream(&mut self, client_id: &ClientId, stream_id: &StreamId) {
+        let key = (client_id.clone(), stream_id.clone());
+        let Some(buffer) = self.buffer_by_stream.remove(&key) else {
+            return;
+        };
+        self.used_tx
+            .send_modify(|used| *used = used.saturating_sub(buffer.len()));
+    }
+
+    fn remove_client(&mut self, client_id: &ClientId) {
+        let mut removed = 0;
+        self.buffer_by_stream
+            .retain(|(buffer_client_id, _), buffer| {
+                let retain = buffer_client_id != client_id;
+                if !retain {
+                    removed += buffer.len();
+                }
+                retain
+            });
+        if removed != 0 {
+            self.used_tx
+                .send_modify(|used| *used = used.saturating_sub(removed));
+        }
+    }
+
     fn server_envelopes(&self) -> impl Iterator<Item = &ServerEnvelope> {
         self.buffer_by_stream
             .values()
@@ -1120,15 +1145,15 @@ impl RemoteControlWebsocket {
                     if client_tracker.close_client(&client_key).await.is_err() {
                         return Ok(());
                     }
-                    state
-                        .lock()
-                        .await
+                    let mut websocket_state = state.lock().await;
+                    websocket_state
                         .client_segment_reassembler
                         .invalidate_stream(&client_key.0, &client_key.1);
-                    state
-                        .lock()
-                        .await
+                    websocket_state
                         .invalidate_client_message_stream(&client_key.0, &client_key.1);
+                    websocket_state
+                        .outbound_buffer
+                        .remove_stream(&client_key.0, &client_key.1);
                     continue;
                 }
                 _ = idle_sweep_interval.tick() => {
@@ -1141,6 +1166,9 @@ impl RemoteControlWebsocket {
                                     .invalidate_stream(&client_id, &stream_id);
                                 websocket_state
                                     .invalidate_client_message_stream(&client_id, &stream_id);
+                                websocket_state
+                                    .outbound_buffer
+                                    .remove_stream(&client_id, &stream_id);
                             }
                         }
                         Err(_) => return Ok(()),
@@ -1226,11 +1254,15 @@ impl RemoteControlWebsocket {
                         .client_segment_reassembler
                         .invalidate_stream(&client_id, &stream_id);
                     websocket_state.invalidate_client_message_stream(&client_id, &stream_id);
+                    websocket_state
+                        .outbound_buffer
+                        .remove_stream(&client_id, &stream_id);
                 } else {
                     websocket_state
                         .client_segment_reassembler
                         .invalidate_client(&client_id);
                     websocket_state.invalidate_client_message_client(&client_id);
+                    websocket_state.outbound_buffer.remove_client(&client_id);
                 }
             }
         }
@@ -2977,6 +3009,72 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(retained, Vec::<Option<usize>>::new());
         assert_eq!(*used_rx.borrow(), 0);
+    }
+
+    #[test]
+    fn outbound_buffer_removes_closed_stream_without_affecting_other_streams() {
+        let (mut outbound_buffer, used_rx) = BoundedOutboundBuffer::new();
+        let client_1 = ClientId("client-1".to_string());
+        let client_2 = ClientId("client-2".to_string());
+        let stream_1 = StreamId("stream-1".to_string());
+
+        outbound_buffer.insert(&server_envelope(
+            &client_1, "stream-1", /*seq_id*/ 1, "closed-1",
+        ));
+        outbound_buffer.insert(&server_envelope(
+            &client_1, "stream-1", /*seq_id*/ 2, "closed-2",
+        ));
+        outbound_buffer.insert(&server_envelope(
+            &client_1,
+            "stream-2",
+            /*seq_id*/ 1,
+            "retained-1",
+        ));
+        outbound_buffer.insert(&server_envelope(
+            &client_2,
+            "stream-1",
+            /*seq_id*/ 1,
+            "retained-2",
+        ));
+
+        outbound_buffer.remove_stream(&client_1, &stream_1);
+
+        let mut retained = outbound_buffer
+            .server_envelopes()
+            .map(|envelope| (envelope.client_id.0.as_str(), envelope.stream_id.0.as_str()))
+            .collect::<Vec<_>>();
+        retained.sort_unstable();
+        assert_eq!(
+            retained,
+            vec![("client-1", "stream-2"), ("client-2", "stream-1")]
+        );
+        assert_eq!(*used_rx.borrow(), 2);
+    }
+
+    #[test]
+    fn outbound_buffer_removes_all_streams_for_closed_client() {
+        let (mut outbound_buffer, used_rx) = BoundedOutboundBuffer::new();
+        let client_1 = ClientId("client-1".to_string());
+        let client_2 = ClientId("client-2".to_string());
+
+        outbound_buffer.insert(&server_envelope(
+            &client_1, "stream-1", /*seq_id*/ 1, "closed-1",
+        ));
+        outbound_buffer.insert(&server_envelope(
+            &client_1, "stream-2", /*seq_id*/ 1, "closed-2",
+        ));
+        outbound_buffer.insert(&server_envelope(
+            &client_2, "stream-1", /*seq_id*/ 1, "retained",
+        ));
+
+        outbound_buffer.remove_client(&client_1);
+
+        let retained = outbound_buffer
+            .server_envelopes()
+            .map(|envelope| (envelope.client_id.0.as_str(), envelope.stream_id.0.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec![("client-2", "stream-1")]);
+        assert_eq!(*used_rx.borrow(), 1);
     }
 
     #[test]
