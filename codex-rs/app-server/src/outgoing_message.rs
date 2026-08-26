@@ -655,12 +655,10 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) {
+        // `thread_source` is an analytics classification and can be `Subagent` for a
+        // user-visible top-level peer. Parentage is the authoritative child signal.
         if let ServerNotification::ThreadStarted(params) = &notification
-            && (params.thread.parent_thread_id.is_some()
-                || matches!(
-                    params.thread.thread_source.as_ref(),
-                    Some(codex_app_server_protocol::ThreadSource::Subagent)
-                ))
+            && params.thread.parent_thread_id.is_some()
         {
             self.register_subagent_thread(thread_id);
         }

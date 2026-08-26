@@ -3537,12 +3537,9 @@ impl ThreadRequestProcessor {
         let mut raw_events_enabled = false;
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;
-            if config_snapshot.parent_thread_id.is_some()
-                || matches!(
-                    config_snapshot.thread_source.as_ref(),
-                    Some(codex_protocol::protocol::ThreadSource::Subagent)
-                )
-            {
+            // `thread_source` is an analytics classification and can be `Subagent` for a
+            // user-visible top-level peer. Parentage is the authoritative child signal.
+            if config_snapshot.parent_thread_id.is_some() {
                 self.outgoing.register_subagent_thread(thread_id);
             }
             self.thread_watch_manager
